@@ -1,0 +1,115 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Helper functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function getUserData() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+    
+    function isAdmin() {
+      return isAuthenticated() && (
+        request.auth.token.role == 'admin' ||
+        getUserData().role == 'admin'
+      );
+    }
+    
+    function isEmployee() {
+      return isAuthenticated() && (
+        request.auth.token.role == 'employee' ||
+        getUserData().role == 'employee'
+      );
+    }
+    
+    function isOwner(uid) {
+      return isAuthenticated() && request.auth.uid == uid;
+    }
+
+    // 1. User Profiles
+    match /users/{userId} {
+      allow read: if isAuthenticated();
+      // Only admins can create users or change roles
+      allow create: if isAdmin();
+      allow update: if isAdmin() || (
+        isOwner(userId) &&
+        !request.resource.data.diff(resource.data).affectedKeys().hasAny(['role', 'employeeId', 'active', 'email'])
+      );
+      allow delete: if isAdmin();
+    }
+
+    // 2. Monthly Budgets
+    match /budgets/{monthKey} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+
+    // 3. Tasks
+    match /tasks/{taskId} {
+      allow read: if isAuthenticated();
+      allow create, update, delete: if isAdmin();
+    }
+
+    // 4. Recurring Task Templates
+    match /recurringTaskTemplates/{templateId} {
+      allow read, write: if isAdmin();
+    }
+
+    // 5. Income Entries
+    match /incomeEntries/{incomeId} {
+      // Employees see their own income; Admins see all
+      allow read: if isAdmin() || (isAuthenticated() && resource.data.employeeUid == request.auth.uid);
+      
+      // Employees can only submit for themselves with valid positive amount
+      allow create: if isAuthenticated() &&
+        request.resource.data.employeeUid == request.auth.uid &&
+        request.resource.data.amount is number &&
+        request.resource.data.amount > 0 &&
+        request.resource.data.status == 'VALID';
+        
+      // Only Admin can void or correct income entries
+      allow update: if isAdmin();
+      allow delete: if false; // Financial records are auditable, never hard-deleted
+    }
+
+    // 6. Expense Entries
+    match /expenseEntries/{expenseId} {
+      // Employees see their own expenses; Admins see all
+      allow read: if isAdmin() || (isAuthenticated() && resource.data.employeeUid == request.auth.uid);
+      
+      // Employees can submit an expense for themselves
+      allow create: if isAuthenticated() &&
+        request.resource.data.employeeUid == request.auth.uid &&
+        request.resource.data.amount is number &&
+        request.resource.data.amount > 0 &&
+        request.resource.data.approvalStatus == 'SUBMITTED';
+        
+      // Only Admins can approve/reject/reimburse expenses
+      allow update: if isAdmin();
+      allow delete: if false;
+    }
+
+    // 7. Grouped Expenses
+    match /expenseGroups/{groupId} {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated(); // Aggregated during expense submission or admin review
+    }
+
+    // 8. Notifications
+    match /notificationEvents/{eventId} {
+      allow read: if isAdmin() || (isAuthenticated() && resource.data.recipientUid == request.auth.uid);
+      allow create, update: if isAdmin() || isAuthenticated();
+      allow delete: if isAdmin();
+    }
+
+    // 9. Activity Logs
+    match /activityLogs/{logId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated();
+      allow update, delete: if false; // Audit logs are strictly immutable
+    }
+  }
+}
