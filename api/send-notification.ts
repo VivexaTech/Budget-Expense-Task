@@ -4,18 +4,35 @@ import { getFirebaseAdmin, verifyAuthToken } from './_firebaseAdmin';
 import { sendUniversalPushNotification } from './_pushDispatcher';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
+  if (req.method === 'OPTIONS') {
+    return res.status(200).json({ ok: true });
+  }
+
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed. Use POST.' });
   }
 
   try {
     getFirebaseAdmin();
-    const authUser = await verifyAuthToken(req.headers.authorization);
-    if (!authUser) {
+    const authHeader = req.headers['authorization'];
+    const cronSecretHeader = req.headers['x-cron-secret'];
+    const expectedSecret = process.env.CRON_SECRET;
+    let isAuthorized = false;
+
+    if (expectedSecret && (authHeader === `Bearer ${expectedSecret}` || cronSecretHeader === expectedSecret)) {
+      isAuthorized = true;
+    } else {
+      const authUser = await verifyAuthToken(authHeader);
+      if (authUser) {
+        isAuthorized = true;
+      }
+    }
+
+    if (!isAuthorized) {
       return res.status(401).json({ error: 'Unauthorized.' });
     }
 
-    const { eventId, idempotencyKey, title, body, targetTaskId, recipientUid } = req.body;
+    const { eventId, idempotencyKey, title, body, targetTaskId, recipientUid, data: extraData } = req.body;
 
     if (!title || !body) {
       return res.status(400).json({ error: 'Title and body are required.' });
@@ -42,7 +59,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (recipientUid && recipientUid !== 'ALL_AUTHORIZED') {
       const userDoc = await firestore.collection('users').doc(recipientUid).get();
       const token = userDoc.data()?.pushToken;
-      if (token) tokens.push(token);
+      if (token && typeof token === 'string' && token.trim().length > 0) {
+        tokens.push(token.trim());
+      }
     } else {
       // Broadcast to active users with tokens
       const activeUsersSnap = await firestore
@@ -52,8 +71,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
       activeUsersSnap.forEach((doc) => {
         const token = doc.data()?.pushToken;
-        if (token && typeof token === 'string' && !tokens.includes(token)) {
-          tokens.push(token);
+        if (token && typeof token === 'string' && token.trim().length > 0 && !tokens.includes(token.trim())) {
+          tokens.push(token.trim());
         }
       });
     }
@@ -68,7 +87,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         body,
         data: {
           taskId: targetTaskId || '',
-          url: targetTaskId ? `companybudget://tasks/${targetTaskId}` : 'companybudget://',
+          url: targetTaskId ? `companybudget://tasks/${targetTaskId}` : (extraData?.url || 'companybudget://notifications'),
+          ...(extraData || {}),
         },
         channelId: 'financial-alerts',
       });

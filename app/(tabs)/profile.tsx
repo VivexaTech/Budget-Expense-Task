@@ -33,6 +33,8 @@ import { MonthSelectorModal } from '@/components/MonthSelectorModal';
 import {
   getNotificationEnvironment,
   sendTestNotificationAsync,
+  registerForPushNotificationsAsync,
+  getLastRegisteredPushToken,
 } from '@/services/notificationService';
 import { exportMonthlyFinancialReport } from '@/services/exportService';
 import { formatMonthName } from '@/utils/formatters';
@@ -88,10 +90,31 @@ export default function ProfileScreen() {
     );
   };
 
+  const [registeringToken, setRegisteringToken] = useState(false);
+
+  const handleRegisterToken = async () => {
+    if (!user) return;
+    setRegisteringToken(true);
+    try {
+      const token = await registerForPushNotificationsAsync(user.uid);
+      if (token) {
+        Alert.alert('Push Registration', `Device token registered successfully!\n\n${token.substring(0, 36)}...`);
+      } else {
+        const env = getNotificationEnvironment();
+        Alert.alert('Push Registration', env.statusMessage);
+      }
+    } catch (e: any) {
+      Alert.alert('Push Registration Error', e.message || 'Failed to register token.');
+    } finally {
+      setRegisteringToken(false);
+    }
+  };
+
   const handleTestNotification = async () => {
+    if (!user) return;
     setTestingNotification(true);
     try {
-      const res = await sendTestNotificationAsync(user?.uid);
+      const res = await sendTestNotificationAsync(user.uid);
       Alert.alert(res.isLocal ? 'Local Notification' : 'Push Notification', res.message);
     } catch (e: any) {
       Alert.alert('Notification Test Error', e.message);
@@ -224,14 +247,24 @@ export default function ProfileScreen() {
                 </View>
               </View>
 
-              <Button
-                title={getNotificationEnvironment().isExpoGo ? 'Test Notification' : 'Test FCM Push'}
-                size="sm"
-                variant="outline"
-                loading={testingNotification}
-                onPress={handleTestNotification}
-                style={{ alignSelf: 'flex-start', marginTop: SPACING.xs }}
-              />
+              <View style={{ flexDirection: 'row', gap: SPACING.sm, marginTop: SPACING.xs, flexWrap: 'wrap' }}>
+                <Button
+                  title={getNotificationEnvironment().isExpoGo ? 'Test Notification' : 'Send Test Push'}
+                  size="sm"
+                  variant="outline"
+                  loading={testingNotification}
+                  onPress={handleTestNotification}
+                />
+                {!getNotificationEnvironment().isExpoGo && (
+                  <Button
+                    title="Register Device Token"
+                    size="sm"
+                    variant="text"
+                    loading={registeringToken}
+                    onPress={handleRegisterToken}
+                  />
+                )}
+              </View>
             </View>
           </Card>
         </View>

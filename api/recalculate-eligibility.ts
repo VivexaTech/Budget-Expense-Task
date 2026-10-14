@@ -1,16 +1,34 @@
 import { VercelRequest, VercelResponse } from './_types';
 import * as admin from 'firebase-admin';
 import { getFirebaseAdmin, verifyAuthToken } from './_firebaseAdmin';
+import { sendUniversalPushNotification } from './_pushDispatcher';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
+  if (req.method === 'OPTIONS') {
+    return res.status(200).json({ ok: true });
+  }
+
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed. Use POST.' });
   }
 
   try {
     getFirebaseAdmin();
-    const authUser = await verifyAuthToken(req.headers.authorization);
-    if (!authUser) {
+    const authHeader = req.headers['authorization'];
+    const cronSecretHeader = req.headers['x-cron-secret'];
+    const expectedSecret = process.env.CRON_SECRET;
+    let isAuthorized = false;
+
+    if (expectedSecret && (authHeader === `Bearer ${expectedSecret}` || cronSecretHeader === expectedSecret)) {
+      isAuthorized = true;
+    } else {
+      const authUser = await verifyAuthToken(authHeader);
+      if (authUser) {
+        isAuthorized = true;
+      }
+    }
+
+    if (!isAuthorized) {
       return res.status(401).json({ error: 'Unauthorized.' });
     }
 
@@ -170,6 +188,41 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     if (updatedCount > 0) {
       await batch.commit();
+    }
+
+    // Dispatch real push notifications for newly ready tasks to all active users with tokens
+    if (newlyReadyTasks.length > 0) {
+      try {
+        const activeUsersSnap = await firestore
+          .collection('users')
+          .where('active', '==', true)
+          .get();
+
+        const tokens: string[] = [];
+        activeUsersSnap.forEach((doc) => {
+          const t = doc.data()?.pushToken;
+          if (t && typeof t === 'string' && t.trim().length > 0 && !tokens.includes(t.trim())) {
+            tokens.push(t.trim());
+          }
+        });
+
+        if (tokens.length > 0) {
+          for (const readyTask of newlyReadyTasks) {
+            await sendUniversalPushNotification({
+              tokens,
+              title: 'Company Task Ready for Review',
+              body: `${readyTask.title} — ₹${readyTask.amount.toLocaleString('en-IN')} is financially ready for review.`,
+              data: {
+                taskId: readyTask.id,
+                url: `companybudget://tasks/${readyTask.id}`,
+              },
+              channelId: 'financial-alerts',
+            });
+          }
+        }
+      } catch (pushErr) {
+        console.warn('[RecalculateEligibility] Push dispatch warning:', pushErr);
+      }
     }
 
     return res.status(200).json({

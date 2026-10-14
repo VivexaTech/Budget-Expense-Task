@@ -3,6 +3,10 @@ import * as admin from 'firebase-admin';
 import { getFirebaseAdmin, verifyAuthToken } from './_firebaseAdmin';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
+  if (req.method === 'OPTIONS') {
+    return res.status(200).json({ ok: true });
+  }
+
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed. Use POST.' });
   }

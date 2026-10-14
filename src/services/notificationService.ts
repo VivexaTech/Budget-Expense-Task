@@ -17,8 +17,7 @@ export function isRunningInExpoGo(): boolean {
   try {
     return (
       Constants?.appOwnership === 'expo' ||
-      Constants?.executionEnvironment === ExecutionEnvironment.StoreClient ||
-      Boolean(Constants?.expoVersion)
+      Constants?.executionEnvironment === ExecutionEnvironment.StoreClient
     );
   } catch {
     return false;
@@ -28,6 +27,11 @@ export function isRunningInExpoGo(): boolean {
 // Module cache for expo-notifications
 let _notificationsModule: typeof NotificationsType | null = null;
 let _handlerConfigured = false;
+let _lastRegisteredToken: string | null = null;
+
+export function getLastRegisteredPushToken(): string | null {
+  return _lastRegisteredToken;
+}
 
 /**
  * Safely access expo-notifications module only when NOT running in Expo Go.
@@ -50,7 +54,7 @@ function getNotifications(): typeof NotificationsType | null {
           shouldSetBadge: true,
           shouldShowBanner: true,
           shouldShowList: true,
-          priority: _notificationsModule?.AndroidNotificationPriority?.HIGH,
+          priority: _notificationsModule?.AndroidNotificationPriority?.MAX,
         }),
       });
       _handlerConfigured = true;
@@ -67,16 +71,62 @@ function getNotifications(): typeof NotificationsType | null {
 export function getNotificationEnvironment(): {
   isExpoGo: boolean;
   isDevice: boolean;
+  pushToken: string | null;
   statusMessage: string;
 } {
   const isExpoGo = isRunningInExpoGo();
   return {
     isExpoGo,
     isDevice: Device.isDevice,
+    pushToken: _lastRegisteredToken,
     statusMessage: isExpoGo
       ? 'Running in Expo Go: Remote push notifications are disabled by Expo SDK 53+. Push notifications automatically activate in the Android APK / Dev build.'
-      : 'Standalone / Development Build: Remote FCM push notifications enabled.',
+      : _lastRegisteredToken
+        ? `Registered for push notifications (${_lastRegisteredToken.substring(0, 22)}...)`
+        : 'Standalone / Dev Build: Push token registration active.',
   };
+}
+
+/**
+ * Configure Android notification channels with HIGH importance for notifications to pop up.
+ */
+export async function configureAndroidNotificationChannels(): Promise<void> {
+  if (Platform.OS !== 'android') return;
+
+  const Notifications = getNotifications();
+  if (!Notifications) return;
+
+  try {
+    // Primary channel for financial & task alerts
+    await Notifications.setNotificationChannelAsync('financial-alerts', {
+      name: 'Financial & Task Alerts',
+      description: 'Alerts for task readiness, daily summaries, and income collections',
+      importance: Notifications.AndroidImportance.MAX,
+      vibrationPattern: [0, 250, 250, 250],
+      lightColor: '#1A73E8',
+      enableLights: true,
+      enableVibrate: true,
+      showBadge: true,
+      sound: 'default',
+    });
+
+    // Fallback default channel
+    await Notifications.setNotificationChannelAsync('default', {
+      name: 'Default Alerts',
+      description: 'General application alerts',
+      importance: Notifications.AndroidImportance.MAX,
+      vibrationPattern: [0, 250, 250, 250],
+      lightColor: '#1A73E8',
+      enableLights: true,
+      enableVibrate: true,
+      showBadge: true,
+      sound: 'default',
+    });
+
+    console.log('[NotificationService] Android notification channels configured successfully.');
+  } catch (chanErr) {
+    console.warn('[NotificationService] Notification channel creation warning:', chanErr);
+  }
 }
 
 /**
@@ -87,8 +137,8 @@ export function getNotificationEnvironment(): {
  */
 export async function registerForPushNotificationsAsync(uid?: string): Promise<string | null> {
   // If running inside Expo Go, remote push notifications are not supported starting in SDK 53+.
-  // Return null gracefully without logging warnings or errors.
   if (isRunningInExpoGo()) {
+    console.log('[NotificationService] Running in Expo Go client. Remote push registration skipped.');
     return null;
   }
 
@@ -97,25 +147,12 @@ export async function registerForPushNotificationsAsync(uid?: string): Promise<s
     return null;
   }
 
-  // Always configure notification channel on Android for local & remote alerts
-  if (Platform.OS === 'android') {
-    try {
-      await Notifications.setNotificationChannelAsync('financial-alerts', {
-        name: 'Financial & Task Alerts',
-        importance: Notifications.AndroidImportance.MAX,
-        vibrationPattern: [0, 250, 250, 250],
-        lightColor: '#1A73E8',
-        enableLights: true,
-        enableVibrate: true,
-        showBadge: true,
-      });
-    } catch {
-      // Non-critical channel creation error
-    }
-  }
+  // Always configure notification channels on Android
+  await configureAndroidNotificationChannels();
 
-  // When running in a real standalone APK or development build on a physical device:
-  if (!Device.isDevice) {
+  // iOS simulator cannot receive remote APNs tokens
+  if (!Device.isDevice && Platform.OS === 'ios') {
+    console.log('[NotificationService] Push notifications require a physical iOS device.');
     return null;
   }
 
@@ -131,6 +168,7 @@ export async function registerForPushNotificationsAsync(uid?: string): Promise<s
     }
 
     if (finalStatus !== 'granted') {
+      console.warn('[NotificationService] Notification permission not granted by user.');
       return null;
     }
 
@@ -146,21 +184,42 @@ export async function registerForPushNotificationsAsync(uid?: string): Promise<s
         projectId ? { projectId } : undefined
       );
       token = tokenData.data;
-    } catch {
-      // 2. Fallback to native FCM Device Token if Expo Push token generation fails
+      console.log('[NotificationService] Successfully obtained Expo Push Token:', token);
+    } catch (expoErr: any) {
+      console.warn('[NotificationService] Expo push token retrieval failed, attempting native FCM token:', expoErr?.message || expoErr);
+      // 2. Fallback to native FCM Device Token
       try {
         const deviceData = await Notifications.getDevicePushTokenAsync();
         token = deviceData.data;
-      } catch {
-        // Both unavailable
+        console.log('[NotificationService] Successfully obtained Native FCM Token:', token);
+      } catch (fcmErr: any) {
+        console.error('[NotificationService] Failed to obtain native push token:', fcmErr?.message || fcmErr);
       }
     }
 
-    if (uid && token) {
-      await updateUserPushToken(uid, token);
+    if (token) {
+      _lastRegisteredToken = token;
+      if (uid) {
+        await updateUserPushToken(uid, token);
+      }
     }
-  } catch {
-    // Suppress token registration errors in non-configured environments
+
+    // Listen for provider token refreshes
+    try {
+      Notifications.addPushTokenListener((tokenData) => {
+        if (tokenData?.data) {
+          console.log('[NotificationService] Push token refreshed:', tokenData.data);
+          _lastRegisteredToken = tokenData.data;
+          if (uid) {
+            updateUserPushToken(uid, tokenData.data).catch(() => {});
+          }
+        }
+      });
+    } catch {
+      // Listener setup fallback
+    }
+  } catch (err: any) {
+    console.error('[NotificationService] Error in registerForPushNotificationsAsync:', err?.message || err);
   }
 
   return token;
@@ -169,7 +228,7 @@ export async function registerForPushNotificationsAsync(uid?: string): Promise<s
 /**
  * Send a test notification that works seamlessly in both Expo Go and APK:
  * - In Expo Go: records the notification in Firestore so it appears in Notification Center.
- * - In APK: dispatches via backend FCM service.
+ * - In APK: dispatches via backend FCM/Expo service.
  */
 export async function sendTestNotificationAsync(
   recipientUid?: string
@@ -193,7 +252,7 @@ export async function sendTestNotificationAsync(
 
       return {
         success: true,
-        message: 'Notification recorded in Notification Center! In the final Android APK build, native FCM push alerts will pop up on your device.',
+        message: 'Notification recorded in Notification Center! In the standalone Android APK, native FCM push alerts will pop up on your device.',
         isLocal: true,
       };
     } catch (e: any) {
@@ -210,6 +269,10 @@ export async function sendTestNotificationAsync(
     title: 'Company Budget Alert',
     body: 'Remote push notification delivered successfully to your device.',
     recipientUid,
+    data: {
+      test: 'true',
+      url: 'companybudget://notifications',
+    },
   });
 
   return {
@@ -265,13 +328,15 @@ export function setupNotificationListeners(
 
   try {
     // 1. Check if app was launched by tapping a notification while closed/killed
-    Notifications.getLastNotificationResponseAsync()
-      .then((response) => {
-        if (response) {
-          handleNotificationResponse(response, onNavigate);
-        }
-      })
-      .catch(() => {});
+    if (typeof Notifications.getLastNotificationResponseAsync === 'function') {
+      Notifications.getLastNotificationResponseAsync()
+        .then((response) => {
+          if (response) {
+            handleNotificationResponse(response, onNavigate);
+          }
+        })
+        .catch(() => {});
+    }
 
     // 2. Listen for notification tap responses when app is running/backgrounded
     const sub = Notifications.addNotificationResponseReceivedListener((response) => {
@@ -296,18 +361,38 @@ function handleNotificationResponse(
     return;
   }
 
-  if (data.taskId) {
-    onNavigate('/task-detail', { taskId: String(data.taskId) });
-  } else if (data.url) {
-    if (String(data.url).includes('/tasks')) {
-      onNavigate('/(tabs)/tasks');
-    } else if (String(data.url).includes('/activity')) {
-      onNavigate('/(tabs)/activity');
-    } else {
-      onNavigate('/notifications');
-    }
-  } else {
-    onNavigate('/notifications');
+  const taskId = data.taskId || data.targetTaskId;
+  if (taskId) {
+    onNavigate('/task-detail', { taskId: String(taskId) });
+    return;
   }
-}
 
+  const url = data.url ? String(data.url) : '';
+  if (url) {
+    if (url.includes('/tasks/')) {
+      const match = url.match(/\/tasks\/(.+)$/);
+      if (match && match[1]) {
+        onNavigate('/task-detail', { taskId: match[1] });
+        return;
+      }
+    }
+    if (url.includes('/tasks')) {
+      onNavigate('/(tabs)/tasks');
+      return;
+    }
+    if (url.includes('/activity')) {
+      onNavigate('/(tabs)/activity');
+      return;
+    }
+    if (url.includes('/create-income-task')) {
+      onNavigate('/create-income-task');
+      return;
+    }
+    if (url.includes('/configure-budget')) {
+      onNavigate('/configure-budget');
+      return;
+    }
+  }
+
+  onNavigate('/notifications');
+}

@@ -69,10 +69,15 @@ export async function fetchUserProfile(uid: string): Promise<UserProfile | null>
  */
 export async function updateUserPushToken(uid: string, token: string): Promise<void> {
   try {
-    await updateDoc(doc(db, 'users', uid), {
-      pushToken: token,
-      updatedAt: new Date().toISOString(),
-    });
+    await setDoc(
+      doc(db, 'users', uid),
+      {
+        pushToken: token,
+        updatedAt: new Date().toISOString(),
+      },
+      { merge: true }
+    );
+    console.log('[AuthService] Successfully registered push token in Firestore for user:', uid);
   } catch (err) {
     console.warn('[AuthService] Could not update push token:', err);
   }

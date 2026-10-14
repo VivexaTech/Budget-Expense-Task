@@ -43,6 +43,16 @@ export async function sendUniversalPushNotification({
   let successCount = 0;
   let failureCount = 0;
 
+  // Sanitize data dictionary: FCM requires all keys and values to be strings
+  const sanitizedData: Record<string, string> = {};
+  if (data && typeof data === 'object') {
+    for (const [key, value] of Object.entries(data)) {
+      if (value !== undefined && value !== null) {
+        sanitizedData[key] = String(value);
+      }
+    }
+  }
+
   // 1. Dispatch Expo Push Tokens via Expo's Push Service API
   if (expoTokens.length > 0) {
     try {
@@ -51,7 +61,7 @@ export async function sendUniversalPushNotification({
         sound: 'default',
         title,
         body,
-        data,
+        data: sanitizedData,
         channelId,
         priority: 'high',
       }));
@@ -73,10 +83,13 @@ export async function sendUniversalPushNotification({
           if (item?.status === 'ok') {
             successCount++;
           } else {
+            console.warn('[PushDispatcher] Expo individual token failure:', item);
             failureCount++;
           }
         }
       } else {
+        const errText = await res.text().catch(() => '');
+        console.warn(`[PushDispatcher] Expo HTTP ${res.status} error:`, errText);
         failureCount += expoTokens.length;
       }
     } catch (expoErr) {
@@ -91,7 +104,7 @@ export async function sendUniversalPushNotification({
       const message: admin.messaging.MulticastMessage = {
         tokens: fcmTokens,
         notification: { title, body },
-        data,
+        data: sanitizedData,
         android: {
           priority: 'high',
           notification: {
@@ -99,6 +112,7 @@ export async function sendUniversalPushNotification({
             color: '#1A73E8',
             defaultSound: true,
             defaultVibrateTimings: true,
+            priority: 'max',
           },
         },
       };
@@ -106,6 +120,13 @@ export async function sendUniversalPushNotification({
       const response = await admin.messaging().sendEachForMulticast(message);
       successCount += response.successCount;
       failureCount += response.failureCount;
+      if (response.failureCount > 0) {
+        response.responses.forEach((resp, idx) => {
+          if (!resp.success) {
+            console.warn(`[PushDispatcher] FCM failure for token ${fcmTokens[idx]}:`, resp.error);
+          }
+        });
+      }
     } catch (fcmErr) {
       console.warn('[PushDispatcher] FCM push delivery error:', fcmErr);
       failureCount += fcmTokens.length;

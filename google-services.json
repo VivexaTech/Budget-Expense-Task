@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "349836390493",
+    "project_id": "company-budget-task",
+    "storage_bucket": "company-budget-task.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:349836390493:android:efb9729e7478a6ef339db4",
+        "android_client_info": {
+          "package_name": "com.vivexatech.budgettaskmanager"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCZSnIGloid8XNBBSFYQU55B5ejHxeP-WI"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

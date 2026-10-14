@@ -4,6 +4,10 @@ import { getFirebaseAdmin, verifyAuthToken } from './_firebaseAdmin';
 import { sendUniversalPushNotification } from './_pushDispatcher';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
+  if (req.method === 'OPTIONS') {
+    return res.status(200).json({ ok: true });
+  }
+
   // Allow GET for Vercel Cron, and POST for manual trigger
   if (req.method !== 'GET' && req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed. Use GET or POST.' });
@@ -13,12 +17,24 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     getFirebaseAdmin();
     const firestore = admin.firestore();
 
-    // If manual POST, verify authorization
-    if (req.method === 'POST') {
-      const authUser = await verifyAuthToken(req.headers.authorization);
-      if (!authUser) {
-        return res.status(401).json({ error: 'Unauthorized.' });
+    const authHeader = req.headers['authorization'];
+    const cronSecretHeader = req.headers['x-cron-secret'];
+    const expectedSecret = process.env.CRON_SECRET;
+
+    let isAuthorized = false;
+    let authUser: { uid: string; email?: string; role?: string } | null = null;
+
+    if (expectedSecret && (authHeader === `Bearer ${expectedSecret}` || cronSecretHeader === expectedSecret)) {
+      isAuthorized = true;
+    } else {
+      authUser = await verifyAuthToken(authHeader);
+      if (authUser) {
+        isAuthorized = true;
       }
+    }
+
+    if (!isAuthorized) {
+      return res.status(401).json({ error: 'Unauthorized to trigger daily financial summary.' });
     }
 
     // Determine current date in Asia/Kolkata (IST: UTC + 5:30)

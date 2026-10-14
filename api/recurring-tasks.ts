@@ -1,8 +1,13 @@
 import { VercelRequest, VercelResponse } from './_types';
 import * as admin from 'firebase-admin';
 import { getFirebaseAdmin, verifyAuthToken } from './_firebaseAdmin';
+import { sendUniversalPushNotification } from './_pushDispatcher';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
+  if (req.method === 'OPTIONS') {
+    return res.status(200).json({ ok: true });
+  }
+
   try {
     getFirebaseAdmin();
     const firestore = admin.firestore();
@@ -97,6 +102,30 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         });
 
         createdCount++;
+      }
+    }
+
+    if (createdCount > 0) {
+      try {
+        const adminsSnap = await firestore.collection('users').where('role', '==', 'admin').where('active', '==', true).get();
+        const adminTokens: string[] = [];
+        adminsSnap.forEach((doc) => {
+          const t = doc.data()?.pushToken;
+          if (t && typeof t === 'string' && t.trim().length > 0 && !adminTokens.includes(t.trim())) {
+            adminTokens.push(t.trim());
+          }
+        });
+        if (adminTokens.length > 0) {
+          await sendUniversalPushNotification({
+            tokens: adminTokens,
+            title: 'Recurring Operations Tasks',
+            body: `Generated ${createdCount} recurring operations task(s) for ${targetMonthKey}.`,
+            data: { url: 'companybudget://tasks', monthKey: targetMonthKey },
+            channelId: 'financial-alerts',
+          });
+        }
+      } catch (pushErr) {
+        console.warn('[RecurringTasks] Push dispatch error:', pushErr);
       }
     }
 

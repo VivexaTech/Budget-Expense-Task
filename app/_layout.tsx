@@ -5,15 +5,16 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { View, ActivityIndicator, StyleSheet } from 'react-native';
 import { AuthProvider, useAuth } from '@/context/AuthContext';
 import { COLORS } from '@/constants/theme';
-import { setupNotificationListeners } from '@/services/notificationService';
+import { setupNotificationListeners, configureAndroidNotificationChannels } from '@/services/notificationService';
 
 function RootNavigation() {
   const { user, isLoading } = useAuth();
   const segments = useSegments();
   const router = useRouter();
 
-  // Handle push notification tap & deep links
+  // Initialize Android notification channels and setup push notification tap & deep links
   useEffect(() => {
+    configureAndroidNotificationChannels().catch(() => {});
     const cleanup = setupNotificationListeners((route, params) => {
       if (params) {
         router.push({ pathname: route as any, params });
