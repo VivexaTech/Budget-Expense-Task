@@ -94,6 +94,26 @@ function RootNavigation() {
         name="notifications"
         options={{ headerShown: false }}
       />
+      <Stack.Screen
+        name="clients"
+        options={{ headerShown: false }}
+      />
+      <Stack.Screen
+        name="create-client"
+        options={{ presentation: 'modal', headerShown: false }}
+      />
+      <Stack.Screen
+        name="client-detail"
+        options={{ headerShown: false }}
+      />
+      <Stack.Screen
+        name="invoices"
+        options={{ headerShown: false }}
+      />
+      <Stack.Screen
+        name="invoice-settings"
+        options={{ headerShown: false }}
+      />
     </Stack>
   );
 }

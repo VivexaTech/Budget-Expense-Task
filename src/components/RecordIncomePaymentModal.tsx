@@ -15,10 +15,12 @@ import { X, CheckCircle2, Calendar, CreditCard, ShieldCheck, AlertCircle } from 
 import { COLORS, RADIUS, SPACING, TYPOGRAPHY } from '@/constants/theme';
 import { Input } from './Input';
 import { Button } from './Button';
-import { IncomeTask, PaymentMode } from '@/types';
+import { IncomeTask, PaymentMode, Invoice } from '@/types';
 import { formatCurrency } from '@/utils/formatters';
 import { useAuth } from '@/context/AuthContext';
 import { recordIncomeTaskPayment } from '@/services/incomeTaskService';
+import { PinVerificationModal } from './PinVerificationModal';
+import { generateAndShareInvoicePdf } from '@/services/invoiceService';
 
 interface RecordIncomePaymentModalProps {
   visible: boolean;
@@ -50,6 +52,14 @@ export const RecordIncomePaymentModal: React.FC<RecordIncomePaymentModalProps> =
   const [loading, setLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
+  const [showPinModal, setShowPinModal] = useState(false);
+  const [completedTaskData, setCompletedTaskData] = useState<{
+    id: string;
+    clientName: string;
+    projectName: string;
+    amount: number;
+  } | null>(null);
+
   useEffect(() => {
     if (task) {
       setAmountStr(String(task.remainingAmount));
@@ -57,6 +67,8 @@ export const RecordIncomePaymentModal: React.FC<RecordIncomePaymentModalProps> =
       setNextDueDate(task.dueDate);
       setNotes('');
       setErrorMessage(null);
+      setShowPinModal(false);
+      setCompletedTaskData(null);
     }
   }, [task]);
 
@@ -110,7 +122,7 @@ export const RecordIncomePaymentModal: React.FC<RecordIncomePaymentModalProps> =
           onPress: async () => {
             setLoading(true);
             try {
-              await recordIncomeTaskPayment(
+              const res = await recordIncomeTaskPayment(
                 task.id,
                 {
                   amount: enteredAmount,
@@ -122,11 +134,40 @@ export const RecordIncomePaymentModal: React.FC<RecordIncomePaymentModalProps> =
                 selectedMonthKey
               );
 
-              Alert.alert(
-                'Payment Recorded',
-                `Successfully recorded ${formatCurrency(enteredAmount)} from ${task.clientName}. This has been credited to company income and cash balance.`,
-                [{ text: 'OK', onPress: () => { onClose(); onSuccess(); } }]
-              );
+              if (res.task.status === 'COMPLETED') {
+                Alert.alert(
+                  'Collection Completed',
+                  `Successfully recorded full payment of ${formatCurrency(enteredAmount)} from ${task.clientName}.\n\nWould you like to generate an invoice now?`,
+                  [
+                    {
+                      text: 'Skip for Now',
+                      style: 'cancel',
+                      onPress: () => {
+                        onClose();
+                        onSuccess();
+                      },
+                    },
+                    {
+                      text: 'Generate Invoice',
+                      onPress: () => {
+                        setCompletedTaskData({
+                          id: task.id,
+                          clientName: task.clientName,
+                          projectName: task.projectName,
+                          amount: res.task.expectedAmount,
+                        });
+                        setShowPinModal(true);
+                      },
+                    },
+                  ]
+                );
+              } else {
+                Alert.alert(
+                  'Payment Recorded',
+                  `Successfully recorded ${formatCurrency(enteredAmount)} from ${task.clientName}. Remaining balance: ${formatCurrency(res.task.remainingAmount)}.`,
+                  [{ text: 'OK', onPress: () => { onClose(); onSuccess(); } }]
+                );
+              }
             } catch (e: any) {
               setErrorMessage(e.message || 'Failed to record payment.');
             } finally {
@@ -139,8 +180,9 @@ export const RecordIncomePaymentModal: React.FC<RecordIncomePaymentModalProps> =
   };
 
   return (
-    <Modal
-      visible={visible}
+    <>
+      <Modal
+        visible={visible}
       transparent
       animationType="slide"
       onRequestClose={onClose}
@@ -333,6 +375,44 @@ export const RecordIncomePaymentModal: React.FC<RecordIncomePaymentModalProps> =
         </View>
       </TouchableWithoutFeedback>
     </Modal>
+
+    {showPinModal && completedTaskData && (
+      <PinVerificationModal
+        visible={showPinModal}
+        taskId={completedTaskData.id}
+        taskTitle={completedTaskData.projectName}
+        clientName={completedTaskData.clientName}
+        amount={completedTaskData.amount}
+        onClose={() => {
+          setShowPinModal(false);
+          onClose();
+          onSuccess();
+        }}
+        onSuccess={async (invoice) => {
+          setShowPinModal(false);
+          onClose();
+          onSuccess();
+          Alert.alert(
+            'Invoice Generated!',
+            `Invoice ${invoice.invoiceNumber} has been generated successfully.`,
+            [
+              { text: 'Close', style: 'cancel' },
+              {
+                text: 'Share / View PDF',
+                onPress: async () => {
+                  try {
+                    await generateAndShareInvoicePdf(invoice);
+                  } catch (err: any) {
+                    Alert.alert('Error', err.message || 'Failed to open PDF.');
+                  }
+                },
+              },
+            ]
+          );
+        }}
+      />
+    )}
+  </>
   );
 };
 

@@ -19,6 +19,7 @@ import {
   IncomeCollectionMetrics,
   PaymentMode,
   UserProfile,
+  BillingPreference,
 } from '@/types';
 import { callBackendApi } from './apiClient';
 import { recalculateTaskEligibility } from './taskService';
@@ -29,14 +30,23 @@ import { recalculateTaskEligibility } from './taskService';
  */
 export async function createIncomeTask(
   data: {
+    clientId?: string;
     clientName: string;
     clientPhone?: string;
     projectName: string;
+    originalAmount?: number;
+    discountType?: 'FIXED' | 'PERCENTAGE';
+    discountValue?: number;
+    discountAmount?: number;
     expectedAmount: number;
     dueDate: string; // YYYY-MM-DD
     reminderDate?: string; // YYYY-MM-DD
     notes?: string;
     monthKey: string; // YYYY-MM
+    invoicePreference?: BillingPreference;
+    assignedToUid?: string;
+    assignedToEmployeeId?: string;
+    assignedToName?: string;
   },
   user: UserProfile
 ): Promise<IncomeTask> {
@@ -46,9 +56,14 @@ export async function createIncomeTask(
 
   const task: IncomeTask = {
     id: newRef.id,
+    clientId: data.clientId || undefined,
     clientName: data.clientName.trim(),
     clientPhone: data.clientPhone?.trim() || '',
     projectName: data.projectName.trim(),
+    originalAmount: data.originalAmount !== undefined ? Number(data.originalAmount) : amount,
+    discountType: data.discountType || undefined,
+    discountValue: data.discountValue !== undefined ? Number(data.discountValue) : undefined,
+    discountAmount: data.discountAmount !== undefined ? Number(data.discountAmount) : 0,
     expectedAmount: amount,
     receivedAmount: 0,
     remainingAmount: amount,
@@ -57,9 +72,14 @@ export async function createIncomeTask(
     notes: data.notes?.trim() || '',
     monthKey: data.monthKey,
     status: 'PENDING',
+    invoicePreference: data.invoicePreference || 'ASK_EVERY_TIME',
+    invoiceStatus: 'NOT_GENERATED',
     createdByUid: user.uid,
     createdByEmployeeId: user.employeeId,
     createdByName: user.displayName,
+    assignedToUid: data.assignedToUid || undefined,
+    assignedToEmployeeId: data.assignedToEmployeeId || undefined,
+    assignedToName: data.assignedToName || undefined,
     payments: [],
     createdAt: now,
     updatedAt: now,

@@ -7,6 +7,7 @@ import {
   RefreshControl,
   TouchableOpacity,
   TextInput,
+  Alert,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
@@ -33,6 +34,8 @@ import { FAB } from '@/components/FAB';
 import { MonthSelectorModal } from '@/components/MonthSelectorModal';
 import { TaskCompletionModal } from '@/components/TaskCompletionModal';
 import { RecordIncomePaymentModal } from '@/components/RecordIncomePaymentModal';
+import { PinVerificationModal } from '@/components/PinVerificationModal';
+import { getInvoiceById, generateAndShareInvoicePdf } from '@/services/invoiceService';
 import {
   FinancialTask,
   TaskStatus,
@@ -77,6 +80,27 @@ export default function TasksScreen() {
 
   const [recordPaymentModalVisible, setRecordPaymentModalVisible] = useState(false);
   const [selectedIncomeTaskToPay, setSelectedIncomeTaskToPay] = useState<IncomeTask | null>(null);
+
+  const [pinModalVisible, setPinModalVisible] = useState(false);
+  const [selectedTaskForInvoice, setSelectedTaskForInvoice] = useState<IncomeTask | null>(null);
+
+  const handleOpenInvoiceModal = (task: IncomeTask) => {
+    setSelectedTaskForInvoice(task);
+    setPinModalVisible(true);
+  };
+
+  const handleViewInvoice = async (invoiceId: string) => {
+    try {
+      const inv = await getInvoiceById(invoiceId);
+      if (inv) {
+        await generateAndShareInvoicePdf(inv);
+      } else {
+        Alert.alert('Invoice', 'Invoice record could not be loaded.');
+      }
+    } catch (err: any) {
+      Alert.alert('Error', err.message || 'Failed to open invoice PDF.');
+    }
+  };
 
   // Expense task metrics
   const [tasks, setTasks] = useState<FinancialTask[]>([]);
@@ -546,6 +570,8 @@ export default function TasksScreen() {
                   todayStr={todayStr}
                   canRecordPayment={true}
                   onRecordPayment={handleOpenRecordPayment}
+                  onGenerateInvoice={handleOpenInvoiceModal}
+                  onViewInvoice={handleViewInvoice}
                 />
               ))
             )
@@ -595,6 +621,37 @@ export default function TasksScreen() {
           onRefresh();
         }}
       />
+
+      {/* Invoice PIN Verification Modal */}
+      {selectedTaskForInvoice && (
+        <PinVerificationModal
+          visible={pinModalVisible}
+          taskId={selectedTaskForInvoice.id}
+          taskTitle={selectedTaskForInvoice.projectName}
+          clientName={selectedTaskForInvoice.clientName}
+          amount={selectedTaskForInvoice.expectedAmount}
+          onClose={() => {
+            setPinModalVisible(false);
+            setSelectedTaskForInvoice(null);
+          }}
+          onSuccess={async (invoice) => {
+            setPinModalVisible(false);
+            setSelectedTaskForInvoice(null);
+            onRefresh();
+            Alert.alert(
+              'Invoice Generated!',
+              `Invoice ${invoice.invoiceNumber} has been generated successfully.`,
+              [
+                { text: 'Close', style: 'cancel' },
+                {
+                  text: 'Share / View PDF',
+                  onPress: () => generateAndShareInvoicePdf(invoice),
+                },
+              ]
+            );
+          }}
+        />
+      )}
     </SafeAreaView>
   );
 }

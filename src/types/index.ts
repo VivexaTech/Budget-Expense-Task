@@ -100,9 +100,14 @@ export interface IncomePaymentRecord {
 
 export interface IncomeTask {
   id: string;
+  clientId?: string;
   clientName: string;
   clientPhone?: string;
   projectName: string;
+  originalAmount?: number;
+  discountType?: 'FIXED' | 'PERCENTAGE';
+  discountValue?: number;
+  discountAmount?: number;
   expectedAmount: number;
   receivedAmount: number;
   remainingAmount: number;
@@ -111,6 +116,10 @@ export interface IncomeTask {
   notes?: string;
   monthKey: string; // YYYY-MM
   status: IncomeTaskStatus;
+  invoicePreference?: BillingPreference;
+  invoiceId?: string;
+  invoiceNumber?: string;
+  invoiceStatus?: 'NOT_GENERATED' | 'GENERATED' | 'SKIPPED';
   createdByUid: string;
   createdByEmployeeId: string;
   createdByName: string;
@@ -216,7 +225,11 @@ export type ActivityAction =
   | 'TASK_CANCELLED'
   | 'BUDGET_UPDATED'
   | 'EMPLOYEE_CREATED'
-  | 'EMPLOYEE_STATUS_CHANGED';
+  | 'EMPLOYEE_STATUS_CHANGED'
+  | 'CLIENT_CREATED'
+  | 'CLIENT_UPDATED'
+  | 'INVOICE_GENERATED'
+  | 'INVOICE_SETTINGS_UPDATED';
 
 export interface ActivityLog {
   id: string;
@@ -224,7 +237,7 @@ export interface ActivityLog {
   actorName: string;
   actorRole: 'admin' | 'employee' | 'system';
   action: ActivityAction;
-  entityType: 'task' | 'income' | 'expense' | 'budget' | 'user';
+  entityType: 'task' | 'income' | 'expense' | 'budget' | 'user' | 'client' | 'invoice' | 'settings';
   entityId: string;
   description: string;
   metadata?: Record<string, any>;
@@ -335,3 +348,167 @@ export const RecordIncomePaymentSchema = z.object({
   notes: z.string().optional(),
   nextDueDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Next due date must be in YYYY-MM-DD format').optional().or(z.literal('')),
 });
+
+// ==========================================
+// CLIENT MANAGEMENT TYPES
+// ==========================================
+
+export type BillingPreference = 'INVOICE_REQUIRED' | 'INVOICE_NOT_REQUIRED' | 'ASK_EVERY_TIME';
+export type ClientStatus = 'ACTIVE' | 'INACTIVE';
+
+export interface Client {
+  id: string;
+  clientName: string;
+  companyName?: string;
+  contactPerson?: string;
+  mobileNumber: string;
+  email?: string;
+  billingAddress?: string;
+  city?: string;
+  state: string;
+  pincode?: string;
+  gstin?: string;
+  clientNotes?: string;
+  billingPreference: BillingPreference;
+  assignedEmployeeId: string;
+  assignedEmployeeName: string;
+  createdByUid: string;
+  createdByEmployeeId: string;
+  createdByName: string;
+  status: ClientStatus;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ClientMetrics {
+  totalTasksCount: number;
+  totalBusinessValue: number;
+  totalAmountCollected: number;
+  totalOutstandingAmount: number;
+  paidTasksCount: number;
+  partiallyPaidTasksCount: number;
+  pendingTasksCount: number;
+  firstTransactionDate?: string;
+  lastTransactionDate?: string;
+}
+
+export const ClientCreateSchema = z.object({
+  clientName: z.string().min(2, 'Client name must be at least 2 characters'),
+  companyName: z.string().optional(),
+  contactPerson: z.string().optional(),
+  mobileNumber: z.string().min(10, 'Valid 10-digit mobile number is required'),
+  email: z.string().email('Please enter a valid email address').optional().or(z.literal('')),
+  billingAddress: z.string().optional(),
+  city: z.string().optional(),
+  state: z.string().min(2, 'State is required for GST billing'),
+  pincode: z.string().regex(/^\d{6}$/, 'PIN Code must be 6 digits').optional().or(z.literal('')),
+  gstin: z.string().optional(),
+  clientNotes: z.string().optional(),
+  billingPreference: z.enum(['INVOICE_REQUIRED', 'INVOICE_NOT_REQUIRED', 'ASK_EVERY_TIME']),
+  assignedEmployeeId: z.string().min(1, 'Assigned employee is required'),
+});
+
+// ==========================================
+// INVOICE SYSTEM TYPES
+// ==========================================
+
+export type InvoiceType = 'GST' | 'NON_GST';
+export type InvoiceStatus = 'GENERATED' | 'CANCELLED';
+
+export interface ClientBillingSnapshot {
+  clientId: string;
+  clientName: string;
+  companyName?: string;
+  contactPerson?: string;
+  mobileNumber: string;
+  email?: string;
+  billingAddress?: string;
+  city?: string;
+  state: string;
+  pincode?: string;
+  gstin?: string;
+}
+
+export interface SupplierBusinessSnapshot {
+  businessName: string;
+  businessAddress: string;
+  city?: string;
+  state: string;
+  pincode?: string;
+  gstin?: string;
+  contactPhone?: string;
+  contactEmail?: string;
+  logoUrl?: string;
+  paymentTerms?: string;
+  invoiceNotes?: string;
+}
+
+export interface Invoice {
+  id: string; // Document ID
+  invoiceNumber: string; // e.g. VTX-2026-10-001 or VTN-2026-10-001
+  invoiceType: InvoiceType;
+  invoiceSerial: number;
+  invoiceYear: number;
+  invoiceMonth: string; // YYYY-MM
+  clientId: string;
+  taskId: string;
+  serviceName: string;
+  originalAmount: number;
+  discountType: 'FIXED' | 'PERCENTAGE' | 'NONE';
+  discountValue: number;
+  discountAmount: number;
+  taxableAmount: number;
+  gstRate: number; // e.g. 18
+  cgstRate: number; // e.g. 9
+  cgstAmount: number;
+  sgstRate: number; // e.g. 9
+  sgstAmount: number;
+  igstRate: number; // e.g. 18
+  igstAmount: number;
+  totalInvoiceAmount: number;
+  amountPaidAtGeneration: number;
+  balanceDueAtGeneration: number;
+  isSameStateSupply: boolean;
+  clientBillingDetailsSnapshot: ClientBillingSnapshot;
+  supplierBusinessDetailsSnapshot: SupplierBusinessSnapshot;
+  invoiceDate: string; // YYYY-MM-DD
+  createdByUid: string;
+  createdByEmployeeId: string;
+  createdByName: string;
+  createdAt: string;
+  invoiceStatus: InvoiceStatus;
+}
+
+export interface InvoiceSettings {
+  businessName: string;
+  businessAddress: string;
+  city?: string;
+  state: string;
+  pincode?: string;
+  gstin?: string;
+  contactPhone?: string;
+  contactEmail?: string;
+  logoUrl?: string;
+  defaultGstRate: number; // e.g. 18
+  paymentTerms?: string;
+  invoiceNotes?: string;
+  updatedAt?: string;
+  updatedBy?: string;
+  hasGpinConfigured?: boolean;
+  hasNpinConfigured?: boolean;
+}
+
+export const InvoiceSettingsSchema = z.object({
+  businessName: z.string().min(2, 'Business name is required'),
+  businessAddress: z.string().min(3, 'Business address is required'),
+  city: z.string().optional(),
+  state: z.string().min(2, 'Business state is required'),
+  pincode: z.string().optional(),
+  gstin: z.string().optional(),
+  contactPhone: z.string().optional(),
+  contactEmail: z.string().email().optional().or(z.literal('')),
+  defaultGstRate: z.number().min(0).max(28),
+  paymentTerms: z.string().optional(),
+  invoiceNotes: z.string().optional(),
+});
+

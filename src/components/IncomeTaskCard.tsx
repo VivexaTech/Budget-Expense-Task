@@ -18,6 +18,7 @@ import {
   ChevronUp,
   CreditCard,
   User,
+  FileText,
 } from 'lucide-react-native';
 import { COLORS, RADIUS, SPACING, TYPOGRAPHY } from '@/constants/theme';
 import { Card } from './Card';
@@ -30,6 +31,8 @@ interface IncomeTaskCardProps {
   todayStr: string; // YYYY-MM-DD
   onRecordPayment: (task: IncomeTask) => void;
   canRecordPayment: boolean;
+  onGenerateInvoice?: (task: IncomeTask) => void;
+  onViewInvoice?: (invoiceId: string) => void;
 }
 
 export const IncomeTaskCard: React.FC<IncomeTaskCardProps> = ({
@@ -37,6 +40,8 @@ export const IncomeTaskCard: React.FC<IncomeTaskCardProps> = ({
   todayStr,
   onRecordPayment,
   canRecordPayment,
+  onGenerateInvoice,
+  onViewInvoice,
 }) => {
   const [showHistory, setShowHistory] = useState(false);
 
@@ -231,6 +236,38 @@ export const IncomeTaskCard: React.FC<IncomeTaskCardProps> = ({
             onPress={() => onRecordPayment(task)}
             style={{ flex: 1 }}
           />
+        </View>
+      )}
+
+      {/* Completed Task Invoice Options */}
+      {isCompleted && (
+        <View style={styles.actionRow}>
+          {task.invoiceStatus === 'GENERATED' && task.invoiceNumber ? (
+            <View style={styles.invoiceSettledRow}>
+              <View style={styles.invoiceNumberPill}>
+                <FileText size={12} color="#065f46" />
+                <Text style={styles.invoiceNumberPillText}>{task.invoiceNumber}</Text>
+              </View>
+              {onViewInvoice && task.invoiceId && (
+                <TouchableOpacity
+                  style={styles.viewPdfChip}
+                  onPress={() => onViewInvoice(task.invoiceId!)}
+                >
+                  <Text style={styles.viewPdfChipText}>View PDF</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+          ) : (
+            onGenerateInvoice && (
+              <Button
+                title="Generate Invoice"
+                variant="outline"
+                size="sm"
+                onPress={() => onGenerateInvoice(task)}
+                style={{ flex: 1 }}
+              />
+            )
+          )}
         </View>
       )}
     </Card>
@@ -453,5 +490,36 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: SPACING.sm,
     marginTop: SPACING.md,
+  },
+  invoiceSettledRow: {
+    flex: 1,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  invoiceNumberPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: '#ecfdf5',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 4,
+  },
+  invoiceNumberPillText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#065f46',
+  },
+  viewPdfChip: {
+    backgroundColor: '#eff6ff',
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 4,
+  },
+  viewPdfChipText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: COLORS.primary,
   },
 });

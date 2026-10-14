@@ -23,6 +23,7 @@ export const COLORS = {
   surfaceHover: '#F5F5F5',
 
   // Text Hierarchy
+  text: '#202124',
   textPrimary: '#202124',
   textSecondary: '#5F6368',
   textTertiary: '#80868B',
@@ -57,6 +58,13 @@ export const SPACING = {
 };
 
 export const TYPOGRAPHY = {
+  fontSize: {
+    xs: 11,
+    sm: 13,
+    md: 15,
+    lg: 18,
+    xl: 22,
+  },
   // Display / Large Amounts
   displayLarge: {
     fontSize: 32,

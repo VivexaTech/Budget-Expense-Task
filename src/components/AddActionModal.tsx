@@ -14,6 +14,7 @@ import {
   Sliders,
   X,
   CalendarCheck,
+  UserPlus,
 } from 'lucide-react-native';
 import { COLORS, RADIUS, SPACING, TYPOGRAPHY } from '@/constants/theme';
 
@@ -25,6 +26,7 @@ interface AddActionModalProps {
   onAddExpense: () => void;
   onCreateTask: () => void;
   onCreateIncomeTask?: () => void;
+  onCreateClient?: () => void;
   onConfigureBudget: () => void;
 }
 
@@ -36,6 +38,7 @@ export const AddActionModal: React.FC<AddActionModalProps> = ({
   onAddExpense,
   onCreateTask,
   onCreateIncomeTask,
+  onCreateClient,
   onConfigureBudget,
 }) => {
   return (
@@ -72,6 +75,26 @@ export const AddActionModal: React.FC<AddActionModalProps> = ({
                       <Text style={styles.actionTitle}>New Income Collection Task</Text>
                       <Text style={styles.actionSubtitle}>
                         Schedule receivable from client with due date & milestones
+                      </Text>
+                    </View>
+                  </TouchableOpacity>
+                )}
+
+                {onCreateClient && (
+                  <TouchableOpacity
+                    style={styles.actionItem}
+                    onPress={() => {
+                      onClose();
+                      onCreateClient();
+                    }}
+                  >
+                    <View style={[styles.iconCircle, { backgroundColor: '#eff6ff' }]}>
+                      <UserPlus size={22} color={COLORS.primary} />
+                    </View>
+                    <View style={styles.actionTextContainer}>
+                      <Text style={styles.actionTitle}>New Client Profile</Text>
+                      <Text style={styles.actionSubtitle}>
+                        Register client account, contact, and billing preferences
                       </Text>
                     </View>
                   </TouchableOpacity>

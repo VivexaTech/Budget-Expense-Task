@@ -19,6 +19,7 @@ import {
   AlertCircle,
   Plus,
   CalendarCheck,
+  Users,
 } from 'lucide-react-native';
 import { COLORS, RADIUS, SPACING, TYPOGRAPHY, SHADOWS } from '@/constants/theme';
 import { useAuth } from '@/context/AuthContext';
@@ -454,6 +455,57 @@ export default function HomeDashboardScreen() {
           )}
         </Card>
 
+        {/* Quick Access to Clients & Invoices */}
+        <View style={{ flexDirection: 'row', gap: SPACING.sm, marginTop: SPACING.xs, marginBottom: SPACING.md }}>
+          <TouchableOpacity
+            style={{
+              flex: 1,
+              flexDirection: 'row',
+              alignItems: 'center',
+              backgroundColor: COLORS.surface,
+              padding: SPACING.sm,
+              borderRadius: RADIUS.md,
+              borderWidth: 1,
+              borderColor: COLORS.border,
+              gap: 8,
+            }}
+            onPress={() => router.push('/clients')}
+            activeOpacity={0.7}
+          >
+            <View style={{ width: 34, height: 34, borderRadius: 17, backgroundColor: '#eff6ff', justifyContent: 'center', alignItems: 'center' }}>
+              <Users size={16} color={COLORS.primary} />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={{ fontSize: TYPOGRAPHY.fontSize.xs, fontWeight: '700', color: COLORS.textPrimary }}>Clients</Text>
+              <Text style={{ fontSize: 10, color: COLORS.textSecondary }}>Accounts & CRM</Text>
+            </View>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={{
+              flex: 1,
+              flexDirection: 'row',
+              alignItems: 'center',
+              backgroundColor: COLORS.surface,
+              padding: SPACING.sm,
+              borderRadius: RADIUS.md,
+              borderWidth: 1,
+              borderColor: COLORS.border,
+              gap: 8,
+            }}
+            onPress={() => router.push('/invoices')}
+            activeOpacity={0.7}
+          >
+            <View style={{ width: 34, height: 34, borderRadius: 17, backgroundColor: '#ecfdf5', justifyContent: 'center', alignItems: 'center' }}>
+              <Receipt size={16} color={COLORS.success} />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={{ fontSize: TYPOGRAPHY.fontSize.xs, fontWeight: '700', color: COLORS.textPrimary }}>Invoices</Text>
+              <Text style={{ fontSize: 10, color: COLORS.textSecondary }}>GST & Non-GST</Text>
+            </View>
+          </TouchableOpacity>
+        </View>
+
         {/* ============================================================ */}
         {/* SECTION F: EMPLOYEE EXPENSES (Grouped by Employee + Month)  */}
         {/* ============================================================ */}
@@ -559,6 +611,7 @@ export default function HomeDashboardScreen() {
         onAddExpense={() => router.push('/add-expense')}
         onCreateTask={() => router.push('/create-task')}
         onCreateIncomeTask={() => router.push('/create-income-task')}
+        onCreateClient={() => router.push('/create-client')}
         onConfigureBudget={() => router.push('/configure-budget')}
       />
 

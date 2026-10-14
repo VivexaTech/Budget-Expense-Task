@@ -590,6 +590,105 @@ export function runFinancialLogicTests(): boolean {
     metrics.completedTasksCount === 1 && metrics.pendingTasksCount === 3
   );
 
+  // ============================================================
+  // SECTION 8: DISCOUNT & GST INVOICING TESTS
+  // ============================================================
+
+  // Test 26: Fixed Discount
+  function testCalculateDiscount(params: { originalAmount: number; discountType: 'FIXED' | 'PERCENTAGE' | 'NONE'; discountValue: number }) {
+    const orig = Math.max(0, Number(params.originalAmount) || 0);
+    const val = Math.max(0, Number(params.discountValue) || 0);
+    if (params.discountType === 'FIXED') {
+      const discountAmount = Math.min(orig, Math.round(val * 100) / 100);
+      const finalAmount = Math.round((orig - discountAmount) * 100) / 100;
+      return { discountAmount, finalAmount };
+    }
+    if (params.discountType === 'PERCENTAGE') {
+      const capped = Math.min(100, val);
+      const discountAmount = Math.round(((orig * capped) / 100) * 100) / 100;
+      const finalAmount = Math.round((orig - discountAmount) * 100) / 100;
+      return { discountAmount, finalAmount };
+    }
+    return { discountAmount: 0, finalAmount: orig };
+  }
+
+  const d1 = testCalculateDiscount({ originalAmount: 10000, discountType: 'FIXED', discountValue: 1500 });
+  assert('Fixed discount calculates 1500 off 10000 = 8500', d1.discountAmount === 1500 && d1.finalAmount === 8500);
+
+  const d2 = testCalculateDiscount({ originalAmount: 50000, discountType: 'PERCENTAGE', discountValue: 10 });
+  assert('Percentage discount calculates 10% off 50000 = 45000', d2.discountAmount === 5000 && d2.finalAmount === 45000);
+
+  const d3 = testCalculateDiscount({ originalAmount: 2000, discountType: 'FIXED', discountValue: 5000 });
+  assert('Fixed discount cannot exceed original amount (capped to 2000, final 0)', d3.discountAmount === 2000 && d3.finalAmount === 0);
+
+  // Test 27: GST Tax-Inclusive Calculation (Intra-State)
+  function testCalculateGst(total: number, rate: number, isSameState: boolean, isGst: boolean) {
+    if (!isGst || rate <= 0) {
+      return { taxable: total, cgst: 0, sgst: 0, igst: 0, totalTax: 0 };
+    }
+    const taxable = Math.round((total / (1 + rate / 100)) * 100) / 100;
+    const totalTax = Math.round((total - taxable) * 100) / 100;
+    if (isSameState) {
+      const halfTax = Math.round((totalTax / 2) * 100) / 100;
+      const rem = Math.round((totalTax - halfTax) * 100) / 100;
+      return { taxable, cgst: halfTax, sgst: rem, igst: 0, totalTax };
+    } else {
+      return { taxable, cgst: 0, sgst: 0, igst: totalTax, totalTax };
+    }
+  }
+
+  const intraTax = testCalculateGst(11800, 18, true, true);
+  assert(
+    'Intra-state 18% GST on ₹11,800: Taxable ₹10,000, CGST ₹900, SGST ₹900, IGST ₹0',
+    intraTax.taxable === 10000 && intraTax.cgst === 900 && intraTax.sgst === 900 && intraTax.igst === 0
+  );
+  assert(
+    'Intra-state parts sum exactly to total invoice amount',
+    intraTax.taxable + intraTax.cgst + intraTax.sgst === 11800
+  );
+
+  // Test 28: GST Tax-Inclusive Calculation (Inter-State)
+  const interTax = testCalculateGst(11800, 18, false, true);
+  assert(
+    'Inter-state 18% GST on ₹11,800: Taxable ₹10,000, IGST ₹1,800, CGST ₹0, SGST ₹0',
+    interTax.taxable === 10000 && interTax.igst === 1800 && interTax.cgst === 0 && interTax.sgst === 0
+  );
+  assert(
+    'Inter-state parts sum exactly to total invoice amount',
+    interTax.taxable + interTax.igst === 11800
+  );
+
+  // Test 29: Non-GST Invoice Calculation
+  const nonGstTax = testCalculateGst(25000, 18, true, false);
+  assert(
+    'Non-GST invoice preserves full amount as taxable with zero taxes',
+    nonGstTax.taxable === 25000 && nonGstTax.totalTax === 0
+  );
+
+  // Test 30: Odd paise rounding accuracy
+  const oddTax = testCalculateGst(5000, 18, true, true);
+  assert(
+    'Odd amount rounding (₹5,000): Taxable ₹4,237.29, CGST ₹381.36, SGST ₹381.35 sum exactly to ₹5,000',
+    oddTax.taxable + oddTax.cgst + oddTax.sgst === 5000
+  );
+
+  // Test 31: Monthly Serial Numbering Format
+  function formatInvoiceNumber(type: 'GST' | 'NON_GST', year: number, month: number, serial: number) {
+    const prefix = type === 'GST' ? 'VTX' : 'VTN';
+    const monthKey = `${year}-${String(month).padStart(2, '0')}`;
+    const num = String(serial).padStart(3, '0');
+    return `${prefix}-${monthKey}-${num}`;
+  }
+
+  assert(
+    'GST Invoice #1 formats as VTX-2026-10-001',
+    formatInvoiceNumber('GST', 2026, 10, 1) === 'VTX-2026-10-001'
+  );
+  assert(
+    'Non-GST Invoice #42 formats as VTN-2026-10-042',
+    formatInvoiceNumber('NON_GST', 2026, 10, 42) === 'VTN-2026-10-042'
+  );
+
   console.log(`\nTEST RESULTS: ${passed} Passed, ${failed} Failed`);
   return failed === 0;
 }

@@ -22,6 +22,9 @@ import {
   ArrowDownLeft,
   Smartphone,
   FileSpreadsheet,
+  FileText,
+  Building2,
+  KeyRound,
 } from 'lucide-react-native';
 import { COLORS, RADIUS, SPACING, TYPOGRAPHY } from '@/constants/theme';
 import { useAuth } from '@/context/AuthContext';
@@ -147,11 +150,69 @@ export default function ProfileScreen() {
           </View>
         </Card>
 
+        {/* Client & Invoicing System */}
+        <View style={styles.section}>
+          <Text style={styles.sectionHeader}>Client & Billing Management</Text>
+          <Card variant="outlined" style={styles.menuCard}>
+            <TouchableOpacity
+              style={styles.menuItem}
+              onPress={() => router.push('/clients')}
+            >
+              <View style={[styles.menuIconCircle, { backgroundColor: '#eff6ff' }]}>
+                <Building2 size={20} color={COLORS.primary} />
+              </View>
+              <View style={styles.menuItemContent}>
+                <Text style={styles.menuItemTitle}>Clients Directory</Text>
+                <Text style={styles.menuItemSubtitle}>
+                  View and manage client profiles, contacts, and employee assignments
+                </Text>
+              </View>
+              <ChevronRight size={18} color={COLORS.textTertiary} />
+            </TouchableOpacity>
+
+            <View style={styles.menuDivider} />
+
+            <TouchableOpacity
+              style={styles.menuItem}
+              onPress={() => router.push('/invoices')}
+            >
+              <View style={[styles.menuIconCircle, { backgroundColor: '#ecfdf5' }]}>
+                <FileText size={20} color={COLORS.success} />
+              </View>
+              <View style={styles.menuItemContent}>
+                <Text style={styles.menuItemTitle}>Invoices Directory</Text>
+                <Text style={styles.menuItemSubtitle}>
+                  Browse GST & Non-GST invoices, view breakdowns, and share PDFs
+                </Text>
+              </View>
+              <ChevronRight size={18} color={COLORS.textTertiary} />
+            </TouchableOpacity>
+          </Card>
+        </View>
+
         {/* Admin Management Tools */}
         {isAdmin && (
           <View style={styles.section}>
             <Text style={styles.sectionHeader}>Admin Controls</Text>
             <Card variant="outlined" style={styles.menuCard}>
+              <TouchableOpacity
+                style={styles.menuItem}
+                onPress={() => router.push('/invoice-settings')}
+              >
+                <View style={[styles.menuIconCircle, { backgroundColor: '#fef3c7' }]}>
+                  <KeyRound size={20} color={COLORS.warningDark} />
+                </View>
+                <View style={styles.menuItemContent}>
+                  <Text style={styles.menuItemTitle}>Invoice & Tax Configuration</Text>
+                  <Text style={styles.menuItemSubtitle}>
+                    Configure supplier identity, GSTIN, and dual GPIN/NPIN authorization
+                  </Text>
+                </View>
+                <ChevronRight size={18} color={COLORS.textTertiary} />
+              </TouchableOpacity>
+
+              <View style={styles.menuDivider} />
+
               <TouchableOpacity
                 style={styles.menuItem}
                 onPress={() => router.push('/manage-employees')}
