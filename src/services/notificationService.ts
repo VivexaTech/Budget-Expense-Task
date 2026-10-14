@@ -137,12 +137,24 @@ export async function registerForPushNotificationsAsync(uid?: string): Promise<s
     // Determine project ID from EAS config or app config
     const projectId =
       Constants?.expoConfig?.extra?.eas?.projectId ??
-      Constants?.easConfig?.projectId;
+      Constants?.easConfig?.projectId ??
+      'ace45463-6461-4e98-ab8d-aca80e0ea715';
 
-    const tokenData = await Notifications.getExpoPushTokenAsync(
-      projectId ? { projectId } : undefined
-    );
-    token = tokenData.data;
+    // 1. Try Expo Push Token first
+    try {
+      const tokenData = await Notifications.getExpoPushTokenAsync(
+        projectId ? { projectId } : undefined
+      );
+      token = tokenData.data;
+    } catch {
+      // 2. Fallback to native FCM Device Token if Expo Push token generation fails
+      try {
+        const deviceData = await Notifications.getDevicePushTokenAsync();
+        token = deviceData.data;
+      } catch {
+        // Both unavailable
+      }
+    }
 
     if (uid && token) {
       await updateUserPushToken(uid, token);
@@ -237,5 +249,65 @@ export function subscribeToUserNotifications(
       // Silently handle listener interruptions
     }
   );
+}
+
+/**
+ * Setup notification response and deep-link listeners.
+ * Handles notification tap events when app is in foreground, background, or opened from closed state.
+ */
+export function setupNotificationListeners(
+  onNavigate: (route: string, params?: Record<string, string>) => void
+): () => void {
+  const Notifications = getNotifications();
+  if (!Notifications) {
+    return () => {};
+  }
+
+  try {
+    // 1. Check if app was launched by tapping a notification while closed/killed
+    Notifications.getLastNotificationResponseAsync()
+      .then((response) => {
+        if (response) {
+          handleNotificationResponse(response, onNavigate);
+        }
+      })
+      .catch(() => {});
+
+    // 2. Listen for notification tap responses when app is running/backgrounded
+    const sub = Notifications.addNotificationResponseReceivedListener((response) => {
+      handleNotificationResponse(response, onNavigate);
+    });
+
+    return () => {
+      sub.remove();
+    };
+  } catch {
+    return () => {};
+  }
+}
+
+function handleNotificationResponse(
+  response: any,
+  onNavigate: (route: string, params?: Record<string, string>) => void
+) {
+  const data = response?.notification?.request?.content?.data;
+  if (!data) {
+    onNavigate('/notifications');
+    return;
+  }
+
+  if (data.taskId) {
+    onNavigate('/task-detail', { taskId: String(data.taskId) });
+  } else if (data.url) {
+    if (String(data.url).includes('/tasks')) {
+      onNavigate('/(tabs)/tasks');
+    } else if (String(data.url).includes('/activity')) {
+      onNavigate('/(tabs)/activity');
+    } else {
+      onNavigate('/notifications');
+    }
+  } else {
+    onNavigate('/notifications');
+  }
 }
 

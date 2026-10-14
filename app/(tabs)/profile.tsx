@@ -21,6 +21,7 @@ import {
   Receipt,
   ArrowDownLeft,
   Smartphone,
+  FileSpreadsheet,
 } from 'lucide-react-native';
 import { COLORS, RADIUS, SPACING, TYPOGRAPHY } from '@/constants/theme';
 import { useAuth } from '@/context/AuthContext';
@@ -28,15 +29,43 @@ import { Header } from '@/components/Header';
 import { Card } from '@/components/Card';
 import { StatusBadge } from '@/components/StatusBadge';
 import { Button } from '@/components/Button';
+import { MonthSelectorModal } from '@/components/MonthSelectorModal';
 import {
   getNotificationEnvironment,
   sendTestNotificationAsync,
 } from '@/services/notificationService';
+import { exportMonthlyFinancialReport } from '@/services/exportService';
+import { formatMonthName } from '@/utils/formatters';
 
 export default function ProfileScreen() {
   const router = useRouter();
-  const { user, isAdmin, isEmployee, logout } = useAuth();
+  const { user, isAdmin, isEmployee, logout, selectedMonthKey } = useAuth();
   const [testingNotification, setTestingNotification] = useState(false);
+  const [exportModalVisible, setExportModalVisible] = useState(false);
+  const [exporting, setExporting] = useState(false);
+
+  const handleExportMonth = async (monthKey: string) => {
+    setExportModalVisible(false);
+    setExporting(true);
+    try {
+      const res = await exportMonthlyFinancialReport(monthKey);
+      if (res.totalRecords === 0) {
+        Alert.alert(
+          'Export Completed (Empty Month)',
+          `No income or expense records were found for ${formatMonthName(monthKey)}. An empty template was generated.`
+        );
+      } else {
+        Alert.alert(
+          'Report Exported',
+          `Successfully exported ${res.totalRecords} records for ${formatMonthName(monthKey)}:\n\n• Income Entries: ${res.incomeCount} (₹${res.totalIncomeAmount.toLocaleString('en-IN')})\n• Expense Entries: ${res.expenseCount} (₹${res.totalExpenseAmount.toLocaleString('en-IN')})`
+        );
+      }
+    } catch (e: any) {
+      Alert.alert('Export Error', e.message || 'Failed to export monthly report.');
+    } finally {
+      setExporting(false);
+    }
+  };
 
   const handleLogout = () => {
     Alert.alert(
@@ -151,6 +180,27 @@ export default function ProfileScreen() {
                 </View>
                 <ChevronRight size={18} color={COLORS.textTertiary} />
               </TouchableOpacity>
+
+              <View style={styles.menuDivider} />
+
+              <TouchableOpacity
+                style={styles.menuItem}
+                onPress={() => setExportModalVisible(true)}
+                disabled={exporting}
+              >
+                <View style={[styles.menuIconCircle, { backgroundColor: COLORS.successLight }]}>
+                  <FileSpreadsheet size={20} color={COLORS.success} />
+                </View>
+                <View style={styles.menuItemContent}>
+                  <Text style={styles.menuItemTitle}>
+                    {exporting ? 'Generating Report...' : 'Export Monthly Report (CSV)'}
+                  </Text>
+                  <Text style={styles.menuItemSubtitle}>
+                    Download complete income and expense records with payment sources
+                  </Text>
+                </View>
+                <ChevronRight size={18} color={COLORS.textTertiary} />
+              </TouchableOpacity>
             </Card>
           </View>
         )}
@@ -199,6 +249,14 @@ export default function ProfileScreen() {
 
         <View style={{ height: 60 }} />
       </ScrollView>
+
+      {/* Month Picker Modal for CSV Export */}
+      <MonthSelectorModal
+        visible={exportModalVisible}
+        selectedMonthKey={selectedMonthKey}
+        onSelectMonth={(month) => handleExportMonth(month)}
+        onClose={() => setExportModalVisible(false)}
+      />
     </SafeAreaView>
   );
 }

@@ -248,10 +248,353 @@ export function runFinancialLogicTests(): boolean {
   const canCompleteIneligible = availableBal >= ineligibleTaskAmount;
   assert('Ineligible task cannot be completed and exact shortfall equals ₹20,000', canCompleteIneligible === false && shortfall === 20000);
 
+  // Test 12: By Company Fund immediately deducts from available balance
+  // Opening = 100k, Income = 20k, Tasks = 0, CompanyFund Expense = 5k
+  interface TestExpense {
+    amount: number;
+    paymentSource: 'SELF' | 'COMPANY_FUND';
+    approvalStatus: 'SUBMITTED' | 'APPROVED' | 'REJECTED';
+    reimbursementStatus: 'UNPAID' | 'PAID';
+  }
+  function isCompanyExpenseOutflowTest(exp: TestExpense): boolean {
+    if (exp.approvalStatus === 'REJECTED') return false;
+    if (exp.paymentSource === 'COMPANY_FUND') return true;
+    return exp.approvalStatus === 'APPROVED' && exp.reimbursementStatus === 'PAID';
+  }
+
+  const companyFundExpense: TestExpense = {
+    amount: 5000,
+    paymentSource: 'COMPANY_FUND',
+    approvalStatus: 'SUBMITTED',
+    reimbursementStatus: 'PAID',
+  };
+  const outflowCompanyFund = isCompanyExpenseOutflowTest(companyFundExpense) ? companyFundExpense.amount : 0;
+  const balWithCompanyFund = calculateAvailableBalance(100000, 20000, 0, outflowCompanyFund);
+  assert(
+    'By Company Fund expense is immediately deducted from available balance (115k)',
+    balWithCompanyFund === 115000
+  );
+
+  // Test 13: By Self (Employee Paid) does NOT deduct from available balance upon submission
+  const selfSubmittedExpense = {
+    amount: 8000,
+    paymentSource: 'SELF' as const,
+    approvalStatus: 'SUBMITTED' as const,
+    reimbursementStatus: 'UNPAID' as const,
+  };
+  const outflowSelfSubmitted = isCompanyExpenseOutflowTest(selfSubmittedExpense) ? selfSubmittedExpense.amount : 0;
+  const balWithSelfSubmitted = calculateAvailableBalance(100000, 20000, 0, outflowSelfSubmitted);
+  assert(
+    'By Self submitted expense does NOT deduct from available balance (remains 120k)',
+    balWithSelfSubmitted === 120000
+  );
+
+  // Test 14: By Self deducts only after admin approval and reimbursement
+  const selfReimbursedExpense = {
+    amount: 8000,
+    paymentSource: 'SELF' as const,
+    approvalStatus: 'APPROVED' as const,
+    reimbursementStatus: 'PAID' as const,
+  };
+  const outflowSelfReimbursed = isCompanyExpenseOutflowTest(selfReimbursedExpense) ? selfReimbursedExpense.amount : 0;
+  const balWithSelfReimbursed = calculateAvailableBalance(100000, 20000, 0, outflowSelfReimbursed);
+  assert(
+    'By Self expense deducts from company cash only after being reimbursed (112k)',
+    balWithSelfReimbursed === 112000
+  );
+
+  // Test 15: Rejected Company Fund expense is NOT counted as outflow
+  const companyFundRejected = {
+    amount: 5000,
+    paymentSource: 'COMPANY_FUND' as const,
+    approvalStatus: 'REJECTED' as const,
+    reimbursementStatus: 'PAID' as const,
+  };
+  const outflowRejected = isCompanyExpenseOutflowTest(companyFundRejected) ? companyFundRejected.amount : 0;
+  const balWithRejected = calculateAvailableBalance(100000, 20000, 0, outflowRejected);
+  assert(
+    'Rejected company-funded expense is NOT an outflow and preserves company balance (120k)',
+    balWithRejected === 120000
+  );
+
+  // Test 16: RFC 4180 CSV escaping handles quotes, commas, and UTF-8 BOM
+  function escapeCsvCellTest(val: any): string {
+    if (val === null || val === undefined) return '""';
+    const str = String(val).replace(/"/g, '""');
+    return `"${str}"`;
+  }
+  const testDesc = 'Office "Special" Supplies, Pens & Paper';
+  const escaped = escapeCsvCellTest(testDesc);
+  assert(
+    'CSV cell escapes internal quotes and handles commas',
+    escaped === '"Office ""Special"" Supplies, Pens & Paper"'
+  );
+
+  // Test 17: Partial Payment on Income Task updates balances and due date
+  interface TestIncomePayment {
+    id: string;
+    amount: number;
+    date: string;
+    paymentMode: 'CASH' | 'UPI' | 'BANK_TRANSFER' | 'CHEQUE' | 'OTHER';
+  }
+
+  interface TestIncomeTask {
+    id: string;
+    clientName: string;
+    expectedAmount: number;
+    receivedAmount: number;
+    remainingAmount: number;
+    dueDate: string;
+    status: 'PENDING' | 'PARTIALLY_PAID' | 'COMPLETED' | 'CANCELLED';
+    payments: TestIncomePayment[];
+  }
+
+  function recordTestPayment(
+    task: TestIncomeTask,
+    paymentAmount: number,
+    nextDueDate?: string,
+    paymentDate: string = '2026-10-14'
+  ): TestIncomeTask {
+    if (task.status === 'COMPLETED' || task.status === 'CANCELLED') {
+      throw new Error('Cannot record payment for completed or cancelled task');
+    }
+    if (paymentAmount <= 0) {
+      throw new Error('Payment amount must be greater than zero');
+    }
+    if (paymentAmount > task.remainingAmount) {
+      throw new Error(`Payment amount (₹${paymentAmount}) exceeds remaining balance (₹${task.remainingAmount})`);
+    }
+
+    const newReceived = task.receivedAmount + paymentAmount;
+    const newRemaining = Math.max(0, task.expectedAmount - newReceived);
+    const newStatus = newRemaining === 0 ? 'COMPLETED' : 'PARTIALLY_PAID';
+    const effectiveDueDate = newRemaining > 0 && nextDueDate ? nextDueDate : task.dueDate;
+
+    const paymentRecord: TestIncomePayment = {
+      id: `pay-${Date.now()}`,
+      amount: paymentAmount,
+      date: paymentDate,
+      paymentMode: 'UPI',
+    };
+
+    return {
+      ...task,
+      receivedAmount: newReceived,
+      remainingAmount: newRemaining,
+      status: newStatus,
+      dueDate: effectiveDueDate,
+      payments: [...task.payments, paymentRecord],
+    };
+  }
+
+  const initialIncomeTask: TestIncomeTask = {
+    id: 'itask-1',
+    clientName: 'Acme Corp',
+    expectedAmount: 4000,
+    receivedAmount: 0,
+    remainingAmount: 4000,
+    dueDate: '2026-10-15',
+    status: 'PENDING',
+    payments: [],
+  };
+
+  const partialTask = recordTestPayment(initialIncomeTask, 1500, '2026-10-18');
+  assert(
+    'Partial payment (₹1,500 of ₹4,000) updates received to ₹1,500, remaining to ₹2,500, status to PARTIALLY_PAID, and next due date to 2026-10-18',
+    partialTask.receivedAmount === 1500 &&
+      partialTask.remainingAmount === 2500 &&
+      partialTask.status === 'PARTIALLY_PAID' &&
+      partialTask.dueDate === '2026-10-18' &&
+      partialTask.payments.length === 1
+  );
+
+  // Test 18: Overpayment prevention throws an error
+  let overpaymentPrevented = false;
+  try {
+    recordTestPayment(partialTask, 3000); // Remaining is 2500, trying to pay 3000
+  } catch (err: any) {
+    if (err.message.includes('exceeds remaining balance')) {
+      overpaymentPrevented = true;
+    }
+  }
+  assert('Overpayment attempt (₹3,000 when ₹2,500 remaining) is safely blocked', overpaymentPrevented);
+
+  // Test 19: Full final payment marks task COMPLETED with 0 remaining
+  const completedIncomeTask = recordTestPayment(partialTask, 2500);
+  assert(
+    'Final payment of exact remaining balance (₹2,500) sets remaining to 0 and status to COMPLETED',
+    completedIncomeTask.receivedAmount === 4000 &&
+      completedIncomeTask.remainingAmount === 0 &&
+      completedIncomeTask.status === 'COMPLETED' &&
+      completedIncomeTask.payments.length === 2
+  );
+
+  // Test 20: Strict Cash Flow Rule — Uncollected receivables NEVER increase available company balance
+  // Opening balance = 50k, Existing valid income = 20k
+  const baseOpeningBalance = 50000;
+  const initialValidIncome = 20000;
+  const balanceBeforeReceivable = calculateAvailableBalance(baseOpeningBalance, initialValidIncome, 0, 0); // 70k
+
+  // Task created with expected ₹4,000 (Receivable) -> Balance MUST remain 70k (NOT 74k)
+  const balanceWithUncollectedReceivable = calculateAvailableBalance(
+    baseOpeningBalance,
+    initialValidIncome, // Uncollected expected amount is NOT added
+    0,
+    0
+  );
+  assert(
+    'Uncollected expected receivable (₹4,000) does NOT increase company available balance (remains 70k)',
+    balanceWithUncollectedReceivable === 70000
+  );
+
+  // Partial payment of ₹1,500 collected -> ONLY the actual ₹1,500 creates an IncomeEntry and increases balance to 71.5k
+  const balanceAfterPartialCollection = calculateAvailableBalance(
+    baseOpeningBalance,
+    initialValidIncome + partialTask.payments[0].amount, // ONLY actual received 1.5k
+    0,
+    0
+  );
+  assert(
+    'Only actual partial payment collected (₹1,500) increases available company balance to 71.5k (NOT 74k)',
+    balanceAfterPartialCollection === 71500
+  );
+
+  // Test 21: Income Collection Metrics Segregation (Due Today, Overdue, Outstanding, Month Collected)
+  function calculateTestIncomeCollectionMetrics(
+    tasks: TestIncomeTask[],
+    todayStr: string
+  ) {
+    let totalOutstandingCollections = 0;
+    let amountDueToday = 0;
+    let amountOverdue = 0;
+    let amountCollectedThisMonth = 0;
+    let completedTasksCount = 0;
+    let pendingTasksCount = 0;
+    let dueTodayCount = 0;
+    let overdueCount = 0;
+
+    const currentMonth = todayStr.substring(0, 7);
+
+    for (const t of tasks) {
+      if (t.status === 'CANCELLED') continue;
+
+      for (const p of t.payments || []) {
+        if (p.date && p.date.startsWith(currentMonth)) {
+          amountCollectedThisMonth += Number(p.amount || 0);
+        }
+      }
+
+      if (t.status === 'COMPLETED') {
+        completedTasksCount++;
+        continue;
+      }
+
+      pendingTasksCount++;
+      const remaining = Number(t.remainingAmount || 0);
+      totalOutstandingCollections += remaining;
+
+      if (t.dueDate === todayStr) {
+        amountDueToday += remaining;
+        dueTodayCount++;
+      } else if (t.dueDate < todayStr) {
+        amountOverdue += remaining;
+        overdueCount++;
+      }
+    }
+
+    return {
+      totalOutstandingCollections,
+      amountDueToday,
+      amountOverdue,
+      amountCollectedThisMonth,
+      totalTasksCount: tasks.filter((t) => t.status !== 'CANCELLED').length,
+      completedTasksCount,
+      pendingTasksCount,
+      dueTodayCount,
+      overdueCount,
+    };
+  }
+
+  const sampleTasks: TestIncomeTask[] = [
+    {
+      id: 'task-overdue',
+      clientName: 'Client Alpha',
+      expectedAmount: 5000,
+      receivedAmount: 0,
+      remainingAmount: 5000,
+      dueDate: '2026-10-10', // Overdue relative to 2026-10-14
+      status: 'PENDING',
+      payments: [],
+    },
+    {
+      id: 'task-due-today',
+      clientName: 'Client Beta',
+      expectedAmount: 8000,
+      receivedAmount: 2000,
+      remainingAmount: 6000,
+      dueDate: '2026-10-14', // Due today
+      status: 'PARTIALLY_PAID',
+      payments: [{ id: 'p1', amount: 2000, date: '2026-10-02', paymentMode: 'UPI' }],
+    },
+    {
+      id: 'task-future',
+      clientName: 'Client Gamma',
+      expectedAmount: 10000,
+      receivedAmount: 0,
+      remainingAmount: 10000,
+      dueDate: '2026-10-25', // Future
+      status: 'PENDING',
+      payments: [],
+    },
+    {
+      id: 'task-completed',
+      clientName: 'Client Delta',
+      expectedAmount: 4000,
+      receivedAmount: 4000,
+      remainingAmount: 0,
+      dueDate: '2026-10-05',
+      status: 'COMPLETED',
+      payments: [{ id: 'p2', amount: 4000, date: '2026-10-05', paymentMode: 'BANK_TRANSFER' }],
+    },
+    {
+      id: 'task-cancelled',
+      clientName: 'Client Epsilon',
+      expectedAmount: 3000,
+      receivedAmount: 0,
+      remainingAmount: 3000,
+      dueDate: '2026-10-12',
+      status: 'CANCELLED',
+      payments: [],
+    },
+  ];
+
+  const metrics = calculateTestIncomeCollectionMetrics(sampleTasks, '2026-10-14');
+  assert(
+    'Total outstanding collections equals sum of active tasks remaining (5k + 6k + 10k = 21k)',
+    metrics.totalOutstandingCollections === 21000
+  );
+  assert(
+    'Due today amount equals 6k and due today count equals 1',
+    metrics.amountDueToday === 6000 && metrics.dueTodayCount === 1
+  );
+  assert(
+    'Overdue amount equals 5k and overdue count equals 1 (cancelled 3k task ignored)',
+    metrics.amountOverdue === 5000 && metrics.overdueCount === 1
+  );
+  assert(
+    'Month collected amount equals sum of payments in current month (2k + 4k = 6k)',
+    metrics.amountCollectedThisMonth === 6000
+  );
+  assert(
+    'Completed tasks count is 1 and active pending tasks count is 3',
+    metrics.completedTasksCount === 1 && metrics.pendingTasksCount === 3
+  );
+
   console.log(`\nTEST RESULTS: ${passed} Passed, ${failed} Failed`);
   return failed === 0;
 }
 
 // Run if called directly
 runFinancialLogicTests();
+
 

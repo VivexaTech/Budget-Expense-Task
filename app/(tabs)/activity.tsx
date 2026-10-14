@@ -6,6 +6,7 @@ import {
   ScrollView,
   RefreshControl,
   TouchableOpacity,
+  Alert,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import {
@@ -16,12 +17,14 @@ import {
   ArrowUpRight,
   CheckCircle2,
   Calendar,
+  FileSpreadsheet,
 } from 'lucide-react-native';
 import { COLORS, RADIUS, SPACING, TYPOGRAPHY } from '@/constants/theme';
 import { useAuth } from '@/context/AuthContext';
 import { Header } from '@/components/Header';
 import { Card } from '@/components/Card';
 import { ProgressBar } from '@/components/ProgressBar';
+import { Button } from '@/components/Button';
 import { EmptyState } from '@/components/EmptyState';
 import { MonthSelectorModal } from '@/components/MonthSelectorModal';
 import { ActivityLog, DashboardFinancials } from '@/types';
@@ -29,6 +32,7 @@ import {
   subscribeToAllActivity,
   generateMonthlyReportData,
 } from '@/services/activityService';
+import { exportMonthlyFinancialReport } from '@/services/exportService';
 import { formatCurrency, formatDateTime, formatMonthName } from '@/utils/formatters';
 
 export default function ActivityScreen() {
@@ -36,10 +40,37 @@ export default function ActivityScreen() {
 
   const [viewMode, setViewMode] = useState<'ACTIVITY' | 'REPORT'>('ACTIVITY');
   const [refreshing, setRefreshing] = useState(false);
+  const [exporting, setExporting] = useState(false);
   const [monthModalVisible, setMonthModalVisible] = useState(false);
 
   const [activities, setActivities] = useState<ActivityLog[]>([]);
   const [report, setReport] = useState<DashboardFinancials | null>(null);
+
+  const handleExportReport = async () => {
+    if (!isAdmin) {
+      Alert.alert('Permission Denied', 'Only administrators can export monthly financial reports.');
+      return;
+    }
+    setExporting(true);
+    try {
+      const res = await exportMonthlyFinancialReport(selectedMonthKey);
+      if (res.totalRecords === 0) {
+        Alert.alert(
+          'Export Completed (Empty Month)',
+          `No income or expense records were found for ${formatMonthName(selectedMonthKey)}. An empty template was generated.`
+        );
+      } else {
+        Alert.alert(
+          'Report Exported',
+          `Successfully exported ${res.totalRecords} records for ${formatMonthName(selectedMonthKey)}:\n\n• Income Records: ${res.incomeCount} (₹${res.totalIncomeAmount.toLocaleString('en-IN')})\n• Expense Records: ${res.expenseCount} (₹${res.totalExpenseAmount.toLocaleString('en-IN')})`
+        );
+      }
+    } catch (e: any) {
+      Alert.alert('Export Error', e.message || 'Failed to export report.');
+    } finally {
+      setExporting(false);
+    }
+  };
 
   useEffect(() => {
     const unsub = subscribeToAllActivity(setActivities);
@@ -154,6 +185,30 @@ export default function ActivityScreen() {
             /* MONTHLY FINANCIAL REPORT */
             report && (
               <View style={styles.reportContainer}>
+                {/* Admin Export CSV Action */}
+                {isAdmin && (
+                  <Card variant="outlined" style={styles.exportActionCard}>
+                    <View style={styles.exportActionRow}>
+                      <View style={styles.exportIconBox}>
+                        <FileSpreadsheet size={20} color={COLORS.success} />
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.exportActionTitle}>Export Monthly Statement</Text>
+                        <Text style={styles.exportActionSubtitle}>
+                          Download full CSV with payment sources & income details
+                        </Text>
+                      </View>
+                      <Button
+                        title={exporting ? 'Exporting...' : 'Export CSV'}
+                        size="sm"
+                        variant="primary"
+                        loading={exporting}
+                        onPress={handleExportReport}
+                      />
+                    </View>
+                  </Card>
+                )}
+
                 <Card variant="elevated" style={styles.reportHeaderCard}>
                   <Text style={styles.reportPeriodTitle}>
                     {formatMonthName(selectedMonthKey)} Executive Summary
@@ -403,5 +458,33 @@ const styles = StyleSheet.create({
     color: COLORS.textTertiary,
     marginTop: SPACING.xs,
     fontStyle: 'italic',
+  },
+  exportActionCard: {
+    padding: SPACING.md,
+    backgroundColor: COLORS.surface,
+    borderColor: COLORS.success,
+  },
+  exportActionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: SPACING.md,
+  },
+  exportIconBox: {
+    width: 38,
+    height: 38,
+    borderRadius: RADIUS.full,
+    backgroundColor: COLORS.successLight,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  exportActionTitle: {
+    ...TYPOGRAPHY.bodyMedium,
+    fontWeight: '700',
+    color: COLORS.textPrimary,
+  },
+  exportActionSubtitle: {
+    ...TYPOGRAPHY.bodySmall,
+    color: COLORS.textSecondary,
+    marginTop: 1,
   },
 });

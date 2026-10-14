@@ -1,6 +1,7 @@
 import { VercelRequest, VercelResponse } from './_types';
 import * as admin from 'firebase-admin';
 import { getFirebaseAdmin, verifyAuthToken } from './_firebaseAdmin';
+import { sendUniversalPushNotification } from './_pushDispatcher';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'POST') {
@@ -61,49 +62,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const now = new Date().toISOString();
 
     if (tokens.length > 0) {
-      // Send multicast push via FCM
-      const message: admin.messaging.MulticastMessage = {
+      const pushRes = await sendUniversalPushNotification({
         tokens,
-        notification: {
-          title,
-          body,
-        },
+        title,
+        body,
         data: {
           taskId: targetTaskId || '',
           url: targetTaskId ? `companybudget://tasks/${targetTaskId}` : 'companybudget://',
         },
-        android: {
-          priority: 'high',
-          notification: {
-            channelId: 'financial-alerts',
-            color: '#1A73E8',
-            defaultSound: true,
-            defaultVibrateTimings: true,
-          },
-        },
-      };
-
-      const response = await admin.messaging().sendEachForMulticast(message);
-      sentCount = response.successCount;
-
-      // Clean up invalid tokens if any
-      response.responses.forEach(async (resp, idx) => {
-        if (!resp.success && resp.error) {
-          const errorCode = resp.error.code;
-          if (
-            errorCode === 'messaging/invalid-registration-token' ||
-            errorCode === 'messaging/registration-token-not-registered'
-          ) {
-            const badToken = tokens[idx];
-            console.warn(`Removing stale push token: ${badToken}`);
-            const staleUserSnap = await firestore
-              .collection('users')
-              .where('pushToken', '==', badToken)
-              .get();
-            staleUserSnap.forEach((u) => u.ref.update({ pushToken: admin.firestore.FieldValue.delete() }));
-          }
-        }
+        channelId: 'financial-alerts',
       });
+      sentCount = pushRes.successCount;
     }
 
     // Record notification event status

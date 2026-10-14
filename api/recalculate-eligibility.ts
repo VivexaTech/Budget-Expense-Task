@@ -50,17 +50,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       totalCompletedTasksAmount += Number(doc.data().amount || 0);
     });
 
-    // 4. Fetch all approved & reimbursed flexible expenses
-    const paidExpensesSnap = await firestore
+    // 4. Fetch all expenses for monthKey and sum actual company cash outflows
+    const expensesSnap = await firestore
       .collection('expenseEntries')
       .where('monthKey', '==', monthKey)
-      .where('approvalStatus', '==', 'APPROVED')
-      .where('reimbursementStatus', '==', 'PAID')
       .get();
 
     let totalPaidExpensesAmount = 0;
-    paidExpensesSnap.forEach((doc) => {
-      totalPaidExpensesAmount += Number(doc.data().amount || 0);
+    expensesSnap.forEach((doc) => {
+      const e = doc.data();
+      if (e.approvalStatus !== 'REJECTED') {
+        if (e.paymentSource === 'COMPANY_FUND' || (e.approvalStatus === 'APPROVED' && e.reimbursementStatus === 'PAID')) {
+          totalPaidExpensesAmount += Number(e.amount || 0);
+        }
+      }
     });
 
     // 5. Calculate authoritative Available Balance

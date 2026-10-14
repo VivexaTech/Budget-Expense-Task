@@ -13,7 +13,14 @@ import {
   writeBatch,
 } from 'firebase/firestore';
 import { db } from './firebase';
-import { FinancialTask, RecurringTaskTemplate, UserProfile, TaskStatus } from '@/types';
+import {
+  FinancialTask,
+  RecurringTaskTemplate,
+  UserProfile,
+  TaskStatus,
+  ExpenseEntry,
+  isCompanyExpenseOutflow,
+} from '@/types';
 import { callBackendApi } from './apiClient';
 import { syncBudgetTarget } from './budgetService';
 import { formatCurrency } from '@/utils/formatters';
@@ -57,17 +64,18 @@ export async function calculateAvailableBalanceForMonth(monthKey: string): Promi
     completedTasksAmount += Number(d.data().amount || 0);
   });
 
-  // 4. Fetch all approved & reimbursed flexible expenses
-  const paidExpensesQuery = query(
+  // 4. Fetch all flexible expenses and calculate company cash outflows (Company Fund + Reimbursed Self)
+  const expensesQuery = query(
     collection(db, 'expenseEntries'),
-    where('monthKey', '==', monthKey),
-    where('approvalStatus', '==', 'APPROVED'),
-    where('reimbursementStatus', '==', 'PAID')
+    where('monthKey', '==', monthKey)
   );
-  const paidExpensesSnap = await getDocs(paidExpensesQuery);
+  const expensesSnap = await getDocs(expensesQuery);
   let paidExpensesAmount = 0;
-  paidExpensesSnap.forEach((d) => {
-    paidExpensesAmount += Number(d.data().amount || 0);
+  expensesSnap.forEach((d) => {
+    const exp = d.data() as ExpenseEntry;
+    if (isCompanyExpenseOutflow(exp)) {
+      paidExpensesAmount += Number(exp.amount || 0);
+    }
   });
 
   const availableBalance = openingBalance + validIncome - completedTasksAmount - paidExpensesAmount;

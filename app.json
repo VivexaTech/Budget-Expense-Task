@@ -13,6 +13,7 @@
     },
     "android": {
       "package": "com.vivexatech.budgettaskmanager",
+      "versionCode": 1,
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
         "foregroundImage": "./assets/android-icon-foreground.png",
@@ -37,7 +38,8 @@
           "icon": "./assets/icon.png",
           "color": "#1A73E8"
         }
-      ]
+      ],
+      "expo-sharing"
     ],
     "experiments": {
       "typedRoutes": true

@@ -17,10 +17,15 @@ import {
   ExpenseGroup,
   ExpenseApprovalStatus,
   ReimbursementStatus,
+  ExpensePaymentSource,
   UserProfile,
+  isCompanyExpenseOutflow,
+  calculateCompanyExpenseOutflows,
 } from '@/types';
 import { callBackendApi } from './apiClient';
 import { recalculateTaskEligibility } from './taskService';
+
+export { isCompanyExpenseOutflow, calculateCompanyExpenseOutflows };
 
 /**
  * Submit an employee flexible expense
@@ -31,6 +36,7 @@ export async function submitExpenseEntry(
     title: string;
     amount: number;
     monthKey: string;
+    paymentSource: ExpensePaymentSource;
     description?: string;
     category?: string;
     receiptUrl?: string;
@@ -41,6 +47,8 @@ export async function submitExpenseEntry(
   const now = new Date().toISOString();
   const groupId = `${user.employeeId}_${data.monthKey}`;
   const groupRef = doc(db, 'expenseGroups', groupId);
+  const amountNum = Number(data.amount);
+  const isCompanyFund = data.paymentSource === 'COMPANY_FUND';
 
   const entry: ExpenseEntry = {
     id: newRef.id,
@@ -48,13 +56,15 @@ export async function submitExpenseEntry(
     employeeUid: user.uid,
     employeeNameSnapshot: user.displayName,
     title: data.title.trim(),
-    amount: Number(data.amount),
+    amount: amountNum,
     monthKey: data.monthKey,
     description: data.description?.trim() || '',
     category: data.category?.trim() || 'General Expense',
     receiptUrl: data.receiptUrl || '',
+    paymentSource: data.paymentSource,
     approvalStatus: 'SUBMITTED',
-    reimbursementStatus: 'UNPAID',
+    // If company fund, no employee reimbursement needed
+    reimbursementStatus: isCompanyFund ? 'PAID' : 'UNPAID',
     createdAt: now,
   };
 
@@ -72,7 +82,9 @@ export async function submitExpenseEntry(
         employeeUid: user.uid,
         employeeNameSnapshot: user.displayName,
         monthKey: data.monthKey,
-        totalAmount: Number(data.amount),
+        totalAmount: amountNum,
+        companyFundAmount: isCompanyFund ? amountNum : 0,
+        selfPaidAmount: isCompanyFund ? 0 : amountNum,
         entryCount: 1,
         approvedAmount: 0,
         reviewStatus: 'PENDING',
@@ -83,7 +95,9 @@ export async function submitExpenseEntry(
     } else {
       const g = groupDoc.data() as ExpenseGroup;
       transaction.update(groupRef, {
-        totalAmount: Number(g.totalAmount || 0) + Number(data.amount),
+        totalAmount: Number(g.totalAmount || 0) + amountNum,
+        companyFundAmount: Number(g.companyFundAmount || 0) + (isCompanyFund ? amountNum : 0),
+        selfPaidAmount: Number(g.selfPaidAmount || 0) + (isCompanyFund ? 0 : amountNum),
         entryCount: Number(g.entryCount || 0) + 1,
         reviewStatus: 'PENDING',
         updatedAt: now,
@@ -91,6 +105,9 @@ export async function submitExpenseEntry(
     }
 
     // 3. Log audit event
+    const sourceDesc = isCompanyFund
+      ? 'Payment Source: By Company Fund (Direct company deduction)'
+      : 'Payment Source: By Self (Employee paid personally, reimbursable)';
     const auditRef = doc(collection(db, 'activityLogs'));
     transaction.set(auditRef, {
       id: auditRef.id,
@@ -100,11 +117,26 @@ export async function submitExpenseEntry(
       action: 'EXPENSE_SUBMITTED',
       entityType: 'expense',
       entityId: newRef.id,
-      description: `${user.displayName} submitted expense: ${entry.title} (₹${entry.amount.toLocaleString('en-IN')})`,
-      metadata: { amount: entry.amount, monthKey: entry.monthKey, groupId },
+      description: `${user.displayName} submitted expense: ${entry.title} (₹${entry.amount.toLocaleString('en-IN')}) • ${sourceDesc}`,
+      metadata: {
+        amount: entry.amount,
+        monthKey: entry.monthKey,
+        groupId,
+        paymentSource: entry.paymentSource,
+      },
       timestamp: now,
     });
   });
+
+  // If company fund, company cash is deducted immediately: re-evaluate task eligibility
+  if (isCompanyFund) {
+    try {
+      await recalculateTaskEligibility(data.monthKey);
+      callBackendApi('/api/recalculate-eligibility', 'POST', { monthKey: data.monthKey }).catch(() => {});
+    } catch (e) {
+      console.warn('[ExpenseService] Error triggering eligibility recalc:', e);
+    }
+  }
 
   return entry;
 }
@@ -122,6 +154,9 @@ export async function reviewExpenseEntry(
   const expenseRef = doc(db, 'expenseEntries', expenseId);
   const now = new Date().toISOString();
 
+  let targetMonthKey = '';
+  let needEligibilityRecalc = false;
+
   await runTransaction(db, async (transaction) => {
     const expenseDoc = await transaction.get(expenseRef);
     if (!expenseDoc.exists()) {
@@ -129,12 +164,17 @@ export async function reviewExpenseEntry(
     }
 
     const exp = expenseDoc.data() as ExpenseEntry;
+    targetMonthKey = exp.monthKey;
     const groupId = `${exp.employeeId}_${exp.monthKey}`;
     const groupRef = doc(db, 'expenseGroups', groupId);
 
+    const isCompanyFund = exp.paymentSource === 'COMPANY_FUND';
+    // For company fund, reimbursementStatus remains PAID (cannot be reimbursed)
+    const effectiveReimbursementStatus = isCompanyFund ? 'PAID' : reimbursementStatus;
+
     transaction.update(expenseRef, {
       approvalStatus,
-      reimbursementStatus,
+      reimbursementStatus: effectiveReimbursementStatus,
       reviewedBy: adminUser.uid,
       reviewedAt: now,
       rejectionReason: rejectionReason || '',
@@ -144,12 +184,30 @@ export async function reviewExpenseEntry(
     const groupDoc = await transaction.get(groupRef);
     if (groupDoc.exists()) {
       const g = groupDoc.data() as ExpenseGroup;
-      // We will refresh the approved amount when items change
-      const diff = approvalStatus === 'APPROVED' ? exp.amount : 0;
+      const wasApproved = exp.approvalStatus === 'APPROVED';
+      const isNowApproved = approvalStatus === 'APPROVED';
+      let approvedDiff = 0;
+      if (!wasApproved && isNowApproved) {
+        approvedDiff = exp.amount;
+      } else if (wasApproved && !isNowApproved) {
+        approvedDiff = -exp.amount;
+      }
       transaction.update(groupRef, {
-        approvedAmount: (g.approvedAmount || 0) + (approvalStatus === 'APPROVED' ? exp.amount : 0),
+        approvedAmount: Math.max(0, (g.approvedAmount || 0) + approvedDiff),
         updatedAt: now,
       });
+    }
+
+    // Determine if company cash outflow status changed
+    const wasOutflow = isCompanyExpenseOutflow(exp);
+    const mockNextExp: ExpenseEntry = {
+      ...exp,
+      approvalStatus,
+      reimbursementStatus: effectiveReimbursementStatus,
+    };
+    const isNowOutflow = isCompanyExpenseOutflow(mockNextExp);
+    if (wasOutflow !== isNowOutflow) {
+      needEligibilityRecalc = true;
     }
 
     // Audit log
@@ -163,18 +221,62 @@ export async function reviewExpenseEntry(
       entityType: 'expense',
       entityId: expenseId,
       description: `Admin ${approvalStatus.toLowerCase()} expense: ${exp.title} (₹${exp.amount.toLocaleString('en-IN')})`,
-      metadata: { approvalStatus, reimbursementStatus, rejectionReason },
+      metadata: {
+        approvalStatus,
+        reimbursementStatus: effectiveReimbursementStatus,
+        paymentSource: exp.paymentSource,
+        rejectionReason,
+      },
       timestamp: now,
     });
   });
 
-  // If marked paid, actual cash outflow occurred: re-evaluate available balance!
-  if (reimbursementStatus === 'PAID') {
-    const expenseDoc = await getDoc(expenseRef);
-    const exp = expenseDoc.data() as ExpenseEntry;
-    await recalculateTaskEligibility(exp.monthKey);
-    callBackendApi('/api/recalculate-eligibility', 'POST', { monthKey: exp.monthKey }).catch(() => {});
+  // If cash outflow changed, re-evaluate task eligibility
+  if (needEligibilityRecalc && targetMonthKey) {
+    await recalculateTaskEligibility(targetMonthKey);
+    callBackendApi('/api/recalculate-eligibility', 'POST', { monthKey: targetMonthKey }).catch(() => {});
   }
+}
+
+/**
+ * Subscribe to all individual expense entries for a month
+ */
+export function subscribeToMonthExpenses(
+  monthKey: string,
+  callback: (entries: ExpenseEntry[]) => void
+) {
+  const q = query(
+    collection(db, 'expenseEntries'),
+    where('monthKey', '==', monthKey),
+    orderBy('createdAt', 'desc')
+  );
+
+  return onSnapshot(
+    q,
+    (snapshot) => {
+      const entries: ExpenseEntry[] = [];
+      snapshot.forEach((d) => entries.push(d.data() as ExpenseEntry));
+      callback(entries);
+    },
+    (err) => {
+      console.error('[ExpenseService] Month expenses subscription error:', err);
+    }
+  );
+}
+
+/**
+ * Fetch all individual expense entries for a month once
+ */
+export async function getMonthExpenses(monthKey: string): Promise<ExpenseEntry[]> {
+  const q = query(
+    collection(db, 'expenseEntries'),
+    where('monthKey', '==', monthKey),
+    orderBy('createdAt', 'desc')
+  );
+  const snap = await getDocs(q);
+  const entries: ExpenseEntry[] = [];
+  snap.forEach((d) => entries.push(d.data() as ExpenseEntry));
+  return entries;
 }
 
 /**

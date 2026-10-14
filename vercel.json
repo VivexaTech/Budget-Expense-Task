@@ -5,6 +5,10 @@
     {
       "path": "/api/recurring-tasks",
       "schedule": "0 0 1 * *"
+    },
+    {
+      "path": "/api/daily-financial-summary",
+      "schedule": "30 3 * * *"
     }
   ],
   "headers": [

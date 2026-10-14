@@ -80,8 +80,62 @@ export interface IncomeEntry {
   notes?: string;
   createdAt: string;
   status: 'VALID' | 'VOID';
+  incomeTaskId?: string;
 }
 
+export type IncomeTaskStatus = 'PENDING' | 'PARTIALLY_PAID' | 'COMPLETED' | 'CANCELLED';
+
+export interface IncomePaymentRecord {
+  id: string;
+  amount: number;
+  paymentMode: PaymentMode;
+  date: string;
+  receivedByUid: string;
+  receivedByEmployeeId: string;
+  receivedByName: string;
+  notes?: string;
+  nextDueDate?: string;
+  incomeEntryId: string;
+}
+
+export interface IncomeTask {
+  id: string;
+  clientName: string;
+  clientPhone?: string;
+  projectName: string;
+  expectedAmount: number;
+  receivedAmount: number;
+  remainingAmount: number;
+  dueDate: string; // YYYY-MM-DD
+  reminderDate?: string; // YYYY-MM-DD
+  notes?: string;
+  monthKey: string; // YYYY-MM
+  status: IncomeTaskStatus;
+  createdByUid: string;
+  createdByEmployeeId: string;
+  createdByName: string;
+  assignedToUid?: string;
+  assignedToEmployeeId?: string;
+  assignedToName?: string;
+  payments: IncomePaymentRecord[];
+  createdAt: string;
+  updatedAt: string;
+  completedAt?: string;
+}
+
+export interface IncomeCollectionMetrics {
+  totalOutstandingCollections: number;
+  amountDueToday: number;
+  amountOverdue: number;
+  amountCollectedThisMonth: number;
+  totalTasksCount: number;
+  completedTasksCount: number;
+  pendingTasksCount: number;
+  dueTodayCount: number;
+  overdueCount: number;
+}
+
+export type ExpensePaymentSource = 'SELF' | 'COMPANY_FUND';
 export type ExpenseApprovalStatus = 'SUBMITTED' | 'APPROVED' | 'REJECTED';
 export type ReimbursementStatus = 'UNPAID' | 'PAID';
 
@@ -96,6 +150,7 @@ export interface ExpenseEntry {
   monthKey: string;
   category?: string;
   receiptUrl?: string;
+  paymentSource: ExpensePaymentSource;
   approvalStatus: ExpenseApprovalStatus;
   reimbursementStatus: ReimbursementStatus;
   createdAt: string;
@@ -113,14 +168,44 @@ export interface ExpenseGroup {
   totalAmount: number;
   entryCount: number;
   approvedAmount: number;
+  companyFundAmount?: number;
+  selfPaidAmount?: number;
   reviewStatus: 'PENDING' | 'REVIEWED';
   createdAt: string;
   updatedAt: string;
 }
 
+/**
+ * Determine if an expense entry constitutes an actual company cash outflow
+ */
+export function isCompanyExpenseOutflow(entry: ExpenseEntry): boolean {
+  if (entry.approvalStatus === 'REJECTED') {
+    return false;
+  }
+  // Company fund payments deduct from available balance immediately upon entry
+  if (entry.paymentSource === 'COMPANY_FUND') {
+    return true;
+  }
+  // By Self (employee-paid) payments only deduct once approved and reimbursed
+  return entry.approvalStatus === 'APPROVED' && entry.reimbursementStatus === 'PAID';
+}
+
+/**
+ * Calculate total company cash outflows from an array of expense entries
+ */
+export function calculateCompanyExpenseOutflows(entries: ExpenseEntry[]): number {
+  return entries.reduce((sum, e) => {
+    return isCompanyExpenseOutflow(e) ? sum + Number(e.amount || 0) : sum;
+  }, 0);
+}
+
 export type ActivityAction =
   | 'INCOME_ADDED'
   | 'INCOME_VOIDED'
+  | 'INCOME_TASK_CREATED'
+  | 'INCOME_TASK_PAYMENT'
+  | 'INCOME_TASK_UPDATED'
+  | 'INCOME_TASK_CANCELLED'
   | 'EXPENSE_SUBMITTED'
   | 'EXPENSE_APPROVED'
   | 'EXPENSE_REJECTED'
@@ -194,6 +279,7 @@ export const IncomeEntrySchema = z.object({
 export const ExpenseEntrySchema = z.object({
   title: z.string().min(2, 'Expense title is required'),
   amount: z.number().positive('Expense amount must be greater than zero'),
+  paymentSource: z.enum(['SELF', 'COMPANY_FUND']),
   description: z.string().optional(),
   category: z.string().optional(),
   receiptUrl: z.string().optional(),
@@ -231,4 +317,21 @@ export const CreateEmployeeSchema = z.object({
   email: z.string().email('Valid email address is required'),
   password: z.string().min(6, 'Temporary password must be at least 6 characters'),
   role: z.enum(['admin', 'employee']),
+});
+
+export const CreateIncomeTaskSchema = z.object({
+  clientName: z.string().min(2, 'Client name is required'),
+  clientPhone: z.string().optional(),
+  projectName: z.string().min(2, 'Project / service name is required'),
+  expectedAmount: z.number().positive('Expected amount must be greater than zero'),
+  dueDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Due date must be in YYYY-MM-DD format'),
+  reminderDate: z.string().optional(),
+  notes: z.string().optional(),
+});
+
+export const RecordIncomePaymentSchema = z.object({
+  amount: z.number().positive('Payment amount must be greater than zero'),
+  paymentMode: z.enum(['CASH', 'UPI', 'BANK_TRANSFER', 'CHEQUE', 'OTHER']),
+  notes: z.string().optional(),
+  nextDueDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Next due date must be in YYYY-MM-DD format').optional().or(z.literal('')),
 });

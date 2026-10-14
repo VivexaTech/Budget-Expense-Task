@@ -13,6 +13,7 @@ import {
   ClipboardList,
   Sliders,
   X,
+  CalendarCheck,
 } from 'lucide-react-native';
 import { COLORS, RADIUS, SPACING, TYPOGRAPHY } from '@/constants/theme';
 
@@ -23,6 +24,7 @@ interface AddActionModalProps {
   onAddIncome: () => void;
   onAddExpense: () => void;
   onCreateTask: () => void;
+  onCreateIncomeTask?: () => void;
   onConfigureBudget: () => void;
 }
 
@@ -33,6 +35,7 @@ export const AddActionModal: React.FC<AddActionModalProps> = ({
   onAddIncome,
   onAddExpense,
   onCreateTask,
+  onCreateIncomeTask,
   onConfigureBudget,
 }) => {
   return (
@@ -54,6 +57,26 @@ export const AddActionModal: React.FC<AddActionModalProps> = ({
               </View>
 
               <View style={styles.actionsList}>
+                {onCreateIncomeTask && (
+                  <TouchableOpacity
+                    style={styles.actionItem}
+                    onPress={() => {
+                      onClose();
+                      onCreateIncomeTask();
+                    }}
+                  >
+                    <View style={[styles.iconCircle, { backgroundColor: COLORS.successLight }]}>
+                      <CalendarCheck size={22} color={COLORS.success} />
+                    </View>
+                    <View style={styles.actionTextContainer}>
+                      <Text style={styles.actionTitle}>New Income Collection Task</Text>
+                      <Text style={styles.actionSubtitle}>
+                        Schedule receivable from client with due date & milestones
+                      </Text>
+                    </View>
+                  </TouchableOpacity>
+                )}
+
                 <TouchableOpacity
                   style={styles.actionItem}
                   onPress={() => {
@@ -61,13 +84,13 @@ export const AddActionModal: React.FC<AddActionModalProps> = ({
                     onAddIncome();
                   }}
                 >
-                  <View style={[styles.iconCircle, { backgroundColor: COLORS.successLight }]}>
-                    <ArrowDownLeft size={22} color={COLORS.success} />
+                  <View style={[styles.iconCircle, { backgroundColor: COLORS.primaryLight }]}>
+                    <ArrowDownLeft size={22} color={COLORS.primary} />
                   </View>
                   <View style={styles.actionTextContainer}>
-                    <Text style={styles.actionTitle}>Record Income</Text>
+                    <Text style={styles.actionTitle}>Direct Income Entry</Text>
                     <Text style={styles.actionSubtitle}>
-                      Log money received from a client or payer
+                      Log money received directly without a prior task
                     </Text>
                   </View>
                 </TouchableOpacity>

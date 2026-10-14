@@ -5,11 +5,27 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { View, ActivityIndicator, StyleSheet } from 'react-native';
 import { AuthProvider, useAuth } from '@/context/AuthContext';
 import { COLORS } from '@/constants/theme';
+import { setupNotificationListeners } from '@/services/notificationService';
 
 function RootNavigation() {
   const { user, isLoading } = useAuth();
   const segments = useSegments();
   const router = useRouter();
+
+  // Handle push notification tap & deep links
+  useEffect(() => {
+    const cleanup = setupNotificationListeners((route, params) => {
+      if (params) {
+        router.push({ pathname: route as any, params });
+      } else {
+        router.push(route as any);
+      }
+    });
+
+    return () => {
+      cleanup();
+    };
+  }, [router]);
 
   useEffect(() => {
     if (isLoading) return;
@@ -43,6 +59,10 @@ function RootNavigation() {
       />
       <Stack.Screen
         name="add-expense"
+        options={{ presentation: 'modal', headerShown: false }}
+      />
+      <Stack.Screen
+        name="create-income-task"
         options={{ presentation: 'modal', headerShown: false }}
       />
       <Stack.Screen

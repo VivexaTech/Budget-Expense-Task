@@ -18,6 +18,7 @@ import {
   CheckCircle2,
   AlertCircle,
   Plus,
+  CalendarCheck,
 } from 'lucide-react-native';
 import { COLORS, RADIUS, SPACING, TYPOGRAPHY, SHADOWS } from '@/constants/theme';
 import { useAuth } from '@/context/AuthContext';
@@ -36,12 +37,25 @@ import {
   formatReadableDate,
   formatDateTime,
 } from '@/utils/formatters';
-import { FinancialTask, ExpenseGroup, IncomeEntry, ActivityLog, MonthlyBudget } from '@/types';
+import {
+  FinancialTask,
+  ExpenseGroup,
+  ExpenseEntry,
+  IncomeEntry,
+  ActivityLog,
+  MonthlyBudget,
+  IncomeTask,
+  calculateCompanyExpenseOutflows,
+} from '@/types';
 import { subscribeToTasksForMonth, recalculateTaskEligibility } from '@/services/taskService';
 import { subscribeToBudget, computeMonthlyTarget, syncBudgetTarget } from '@/services/budgetService';
 import { subscribeToMonthIncome } from '@/services/incomeService';
-import { subscribeToMonthExpenseGroups } from '@/services/expenseService';
+import { subscribeToMonthExpenseGroups, subscribeToMonthExpenses } from '@/services/expenseService';
 import { subscribeToRecentActivity } from '@/services/activityService';
+import {
+  subscribeToIncomeTasks,
+  calculateIncomeCollectionMetrics,
+} from '@/services/incomeTaskService';
 import { callBackendApi } from '@/services/apiClient';
 
 export default function HomeDashboardScreen() {
@@ -58,25 +72,37 @@ export default function HomeDashboardScreen() {
   const [budget, setBudget] = useState<MonthlyBudget | null>(null);
   const [tasks, setTasks] = useState<FinancialTask[]>([]);
   const [incomeEntries, setIncomeEntries] = useState<IncomeEntry[]>([]);
+  const [expenseEntries, setExpenseEntries] = useState<ExpenseEntry[]>([]);
   const [expenseGroups, setExpenseGroups] = useState<ExpenseGroup[]>([]);
   const [recentActivities, setRecentActivities] = useState<ActivityLog[]>([]);
+  const [incomeTasks, setIncomeTasks] = useState<IncomeTask[]>([]);
+
+  const todayStr = useMemo(() => new Date().toISOString().split('T')[0], []);
 
   // Subscriptions
   useEffect(() => {
     const unsubBudget = subscribeToBudget(selectedMonthKey, setBudget);
     const unsubTasks = subscribeToTasksForMonth(selectedMonthKey, setTasks);
     const unsubIncome = subscribeToMonthIncome(selectedMonthKey, setIncomeEntries);
+    const unsubEntries = subscribeToMonthExpenses(selectedMonthKey, setExpenseEntries);
     const unsubGroups = subscribeToMonthExpenseGroups(selectedMonthKey, setExpenseGroups);
     const unsubActivity = subscribeToRecentActivity(6, setRecentActivities);
+
+    let unsubIncomeTasks = () => {};
+    if (user) {
+      unsubIncomeTasks = subscribeToIncomeTasks(user, setIncomeTasks);
+    }
 
     return () => {
       unsubBudget();
       unsubTasks();
       unsubIncome();
+      unsubEntries();
       unsubGroups();
       unsubActivity();
+      unsubIncomeTasks();
     };
-  }, [selectedMonthKey]);
+  }, [selectedMonthKey, user]);
 
   // Auto-sync budget target if tasks are present but budget is not yet initialized
   useEffect(() => {
@@ -100,11 +126,8 @@ export default function HomeDashboardScreen() {
       .filter((t) => t.status === 'COMPLETED')
       .reduce((sum, item) => sum + item.amount, 0);
 
-    // Paid employee reimbursed expenses
-    const paidExpensesAmount = expenseGroups.reduce(
-      (sum, g) => sum + (g.approvedAmount || 0),
-      0
-    );
+    // Actual company cash outflows (Company Fund payments + Reimbursed By Self payments)
+    const paidExpensesAmount = calculateCompanyExpenseOutflows(expenseEntries);
 
     const actualCompanyExpensesPaid = completedTasksAmount + paidExpensesAmount;
 
@@ -120,7 +143,7 @@ export default function HomeDashboardScreen() {
       availableBalance,
       openingBalance,
     };
-  }, [budget, incomeEntries, tasks, expenseGroups]);
+  }, [budget, incomeEntries, tasks, expenseEntries]);
 
   // Filter tasks for sections C and D
   const readyTasks = useMemo(
@@ -132,6 +155,17 @@ export default function HomeDashboardScreen() {
     () => tasks.filter((t) => t.status === 'PENDING'),
     [tasks]
   );
+
+  // Income Collection Metrics (Secondary Priority Flow)
+  const incomeMetrics = useMemo(() => {
+    return calculateIncomeCollectionMetrics(incomeTasks, todayStr);
+  }, [incomeTasks, todayStr]);
+
+  const activeIncomeTasks = useMemo(() => {
+    return incomeTasks
+      .filter((t) => t.status !== 'COMPLETED' && t.status !== 'CANCELLED')
+      .slice(0, 3);
+  }, [incomeTasks]);
 
   const onRefresh = async () => {
     setRefreshing(true);
@@ -294,7 +328,134 @@ export default function HomeDashboardScreen() {
         )}
 
         {/* ============================================================ */}
-        {/* SECTION E: EMPLOYEE EXPENSES (Grouped by Employee + Month)  */}
+        {/* SECTION E: CLIENT COLLECTIONS (Secondary Priority)          */}
+        {/* ============================================================ */}
+        <View style={styles.sectionHeader}>
+          <View style={styles.sectionTitleRow}>
+            <CalendarCheck size={18} color={COLORS.success} />
+            <Text style={styles.sectionTitle}>Client Collections</Text>
+          </View>
+          <TouchableOpacity onPress={() => router.push('/(tabs)/tasks')}>
+            <Text style={styles.seeAllText}>Manage</Text>
+          </TouchableOpacity>
+        </View>
+
+        <Card variant="elevated" style={styles.collectionsOverviewCard}>
+          <View style={styles.collectionsHeaderRow}>
+            <View>
+              <Text style={styles.collectionsSubLabel}>Total Outstanding Receivables</Text>
+              <Text style={styles.collectionsHeroAmount}>
+                {formatCurrency(incomeMetrics.totalOutstandingCollections)}
+              </Text>
+            </View>
+            <TouchableOpacity
+              style={styles.newCollectionBtn}
+              onPress={() => router.push('/create-income-task')}
+              activeOpacity={0.8}
+            >
+              <Plus size={16} color={COLORS.surface} />
+              <Text style={styles.newCollectionBtnText}>New Task</Text>
+            </TouchableOpacity>
+          </View>
+
+          <View style={styles.collectionsMetricsGrid}>
+            <View style={styles.collectionMetricItem}>
+              <Text style={styles.collectionMetricLabel}>Due Today</Text>
+              <Text
+                style={[
+                  styles.collectionMetricVal,
+                  {
+                    color:
+                      incomeMetrics.amountDueToday > 0 ? COLORS.warning : COLORS.textPrimary,
+                  },
+                ]}
+              >
+                {formatCurrency(incomeMetrics.amountDueToday)}
+              </Text>
+              <Text style={styles.collectionMetricCount}>
+                {incomeMetrics.dueTodayCount} {incomeMetrics.dueTodayCount === 1 ? 'task' : 'tasks'}
+              </Text>
+            </View>
+
+            <View style={styles.gridDivider} />
+
+            <View style={styles.collectionMetricItem}>
+              <Text style={styles.collectionMetricLabel}>Overdue</Text>
+              <Text
+                style={[
+                  styles.collectionMetricVal,
+                  {
+                    color:
+                      incomeMetrics.amountOverdue > 0 ? COLORS.error : COLORS.textPrimary,
+                  },
+                ]}
+              >
+                {formatCurrency(incomeMetrics.amountOverdue)}
+              </Text>
+              <Text style={styles.collectionMetricCount}>
+                {incomeMetrics.overdueCount} {incomeMetrics.overdueCount === 1 ? 'task' : 'tasks'}
+              </Text>
+            </View>
+
+            <View style={styles.gridDivider} />
+
+            <View style={styles.collectionMetricItem}>
+              <Text style={styles.collectionMetricLabel}>Collected (This Mo.)</Text>
+              <Text style={[styles.collectionMetricVal, { color: COLORS.success }]}>
+                {formatCurrency(incomeMetrics.amountCollectedThisMonth)}
+              </Text>
+              <Text style={styles.collectionMetricCount}>
+                {incomeMetrics.completedTasksCount} settled
+              </Text>
+            </View>
+          </View>
+
+          {activeIncomeTasks.length > 0 && (
+            <View style={styles.collectionPreviewList}>
+              {activeIncomeTasks.map((task) => (
+                <TouchableOpacity
+                  key={task.id}
+                  style={styles.collectionPreviewItem}
+                  onPress={() => router.push('/(tabs)/tasks')}
+                  activeOpacity={0.7}
+                >
+                  <View style={styles.collectionPreviewLeft}>
+                    <Text style={styles.collectionPreviewClient} numberOfLines={1}>
+                      {task.clientName}
+                    </Text>
+                    <Text style={styles.collectionPreviewProject} numberOfLines={1}>
+                      {task.projectName} • Due {task.dueDate}
+                    </Text>
+                  </View>
+                  <View style={styles.collectionPreviewRight}>
+                    <Text style={styles.collectionPreviewAmount}>
+                      {formatCurrency(task.remainingAmount)}
+                    </Text>
+                    <Text
+                      style={[
+                        styles.collectionPreviewBadge,
+                        task.dueDate < todayStr
+                          ? styles.badgeOverdue
+                          : task.dueDate === todayStr
+                          ? styles.badgeDueToday
+                          : styles.badgePending,
+                      ]}
+                    >
+                      {task.dueDate < todayStr
+                        ? 'Overdue'
+                        : task.dueDate === todayStr
+                        ? 'Due Today'
+                        : 'Upcoming'}
+                    </Text>
+                  </View>
+                </TouchableOpacity>
+              ))}
+            </View>
+          )}
+        </Card>
+
+        {/* ============================================================ */}
+        {/* SECTION F: EMPLOYEE EXPENSES (Grouped by Employee + Month)  */}
         {/* ============================================================ */}
         <View style={styles.sectionHeader}>
           <View style={styles.sectionTitleRow}>
@@ -397,6 +558,7 @@ export default function HomeDashboardScreen() {
         onAddIncome={() => router.push('/add-income')}
         onAddExpense={() => router.push('/add-expense')}
         onCreateTask={() => router.push('/create-task')}
+        onCreateIncomeTask={() => router.push('/create-income-task')}
         onConfigureBudget={() => router.push('/configure-budget')}
       />
 
@@ -598,5 +760,122 @@ const styles = StyleSheet.create({
     ...TYPOGRAPHY.bodySmall,
     color: COLORS.textTertiary,
     marginTop: 2,
+  },
+  collectionsOverviewCard: {
+    padding: SPACING.lg,
+    backgroundColor: COLORS.surface,
+    marginBottom: SPACING.xs,
+  },
+  collectionsHeaderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+  },
+  collectionsSubLabel: {
+    ...TYPOGRAPHY.labelSmall,
+    color: COLORS.textSecondary,
+    fontWeight: '500',
+  },
+  collectionsHeroAmount: {
+    ...TYPOGRAPHY.amountHero,
+    color: COLORS.textPrimary,
+    marginTop: 2,
+  },
+  newCollectionBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: COLORS.success,
+    paddingHorizontal: SPACING.md,
+    paddingVertical: 6,
+    borderRadius: RADIUS.full,
+  },
+  newCollectionBtnText: {
+    ...TYPOGRAPHY.labelSmall,
+    color: COLORS.surface,
+    fontWeight: '700',
+  },
+  collectionsMetricsGrid: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginTop: SPACING.md,
+    backgroundColor: COLORS.background,
+    borderRadius: RADIUS.md,
+    paddingVertical: SPACING.md,
+    paddingHorizontal: SPACING.sm,
+  },
+  collectionMetricItem: {
+    flex: 1,
+    alignItems: 'center',
+  },
+  collectionMetricLabel: {
+    ...TYPOGRAPHY.labelSmall,
+    color: COLORS.textSecondary,
+    marginBottom: 2,
+  },
+  collectionMetricVal: {
+    ...TYPOGRAPHY.amountMedium,
+  },
+  collectionMetricCount: {
+    ...TYPOGRAPHY.bodySmall,
+    color: COLORS.textTertiary,
+    fontSize: 11,
+    marginTop: 2,
+  },
+  collectionPreviewList: {
+    marginTop: SPACING.md,
+    borderTopWidth: 1,
+    borderTopColor: COLORS.border,
+    paddingTop: SPACING.xs,
+  },
+  collectionPreviewItem: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: SPACING.sm,
+  },
+  collectionPreviewLeft: {
+    flex: 1,
+    marginRight: SPACING.sm,
+  },
+  collectionPreviewClient: {
+    ...TYPOGRAPHY.bodyMedium,
+    fontWeight: '600',
+    color: COLORS.textPrimary,
+  },
+  collectionPreviewProject: {
+    ...TYPOGRAPHY.bodySmall,
+    color: COLORS.textSecondary,
+    marginTop: 2,
+  },
+  collectionPreviewRight: {
+    alignItems: 'flex-end',
+  },
+  collectionPreviewAmount: {
+    ...TYPOGRAPHY.bodyMedium,
+    fontWeight: '700',
+    color: COLORS.textPrimary,
+  },
+  collectionPreviewBadge: {
+    fontSize: 11,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: RADIUS.sm,
+    marginTop: 2,
+    fontWeight: '600',
+    overflow: 'hidden',
+  },
+  badgeOverdue: {
+    backgroundColor: '#FFEBEE',
+    color: COLORS.error,
+  },
+  badgeDueToday: {
+    backgroundColor: '#FFF8E1',
+    color: '#D97706',
+  },
+  badgePending: {
+    backgroundColor: COLORS.primaryLight,
+    color: COLORS.primary,
   },
 });

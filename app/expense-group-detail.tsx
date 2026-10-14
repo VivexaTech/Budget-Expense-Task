@@ -17,6 +17,9 @@ import {
   Clock,
   CreditCard,
   AlertCircle,
+  User,
+  Building2,
+  CheckCircle2,
 } from 'lucide-react-native';
 import { COLORS, RADIUS, SPACING, TYPOGRAPHY } from '@/constants/theme';
 import { useAuth } from '@/context/AuthContext';
@@ -55,6 +58,22 @@ export default function ExpenseGroupDetailScreen() {
     [entries]
   );
 
+  const companyFundTotal = useMemo(
+    () =>
+      entries
+        .filter((e) => e.paymentSource === 'COMPANY_FUND')
+        .reduce((sum, e) => sum + e.amount, 0),
+    [entries]
+  );
+
+  const selfPaidTotal = useMemo(
+    () =>
+      entries
+        .filter((e) => e.paymentSource === 'SELF' || !e.paymentSource)
+        .reduce((sum, e) => sum + e.amount, 0),
+    [entries]
+  );
+
   const approvedAmount = useMemo(
     () =>
       entries
@@ -63,10 +82,14 @@ export default function ExpenseGroupDetailScreen() {
     [entries]
   );
 
-  const paidAmount = useMemo(
+  const disbursedAmount = useMemo(
     () =>
       entries
-        .filter((e) => e.reimbursementStatus === 'PAID')
+        .filter(
+          (e) =>
+            (e.paymentSource === 'SELF' || !e.paymentSource) &&
+            e.reimbursementStatus === 'PAID'
+        )
         .reduce((sum, e) => sum + e.amount, 0),
     [entries]
   );
@@ -114,7 +137,7 @@ export default function ExpenseGroupDetailScreen() {
         {/* Group Summary Card */}
         <Card variant="elevated" style={styles.summaryCard}>
           <View style={styles.summaryRow}>
-            <View>
+            <View style={{ flex: 1 }}>
               <Text style={styles.summaryLabel}>Total Submitted</Text>
               <Text style={styles.summaryAmount}>{formatCurrency(totalAmount)}</Text>
               <Text style={styles.summaryMeta}>
@@ -124,15 +147,21 @@ export default function ExpenseGroupDetailScreen() {
 
             <View style={styles.statusCol}>
               <View style={styles.metricRow}>
-                <Text style={styles.metricLabel}>Approved:</Text>
-                <Text style={[styles.metricValue, { color: COLORS.success }]}>
-                  {formatCurrency(approvedAmount)}
+                <Text style={styles.metricLabel}>Company Fund:</Text>
+                <Text style={[styles.metricValue, { color: COLORS.warningDark }]}>
+                  {formatCurrency(companyFundTotal)}
                 </Text>
               </View>
               <View style={styles.metricRow}>
-                <Text style={styles.metricLabel}>Disbursed (Paid):</Text>
+                <Text style={styles.metricLabel}>By Self:</Text>
                 <Text style={[styles.metricValue, { color: COLORS.primary }]}>
-                  {formatCurrency(paidAmount)}
+                  {formatCurrency(selfPaidTotal)}
+                </Text>
+              </View>
+              <View style={styles.metricRow}>
+                <Text style={styles.metricLabel}>Reimbursed:</Text>
+                <Text style={[styles.metricValue, { color: COLORS.success }]}>
+                  {formatCurrency(disbursedAmount)}
                 </Text>
               </View>
             </View>
@@ -143,8 +172,10 @@ export default function ExpenseGroupDetailScreen() {
         <Text style={styles.sectionTitle}>Individual Submissions</Text>
 
         {entries.map((item) => {
+          const isCompanyFund = item.paymentSource === 'COMPANY_FUND';
           const isSubmitted = item.approvalStatus === 'SUBMITTED';
           const isApproved = item.approvalStatus === 'APPROVED';
+          const isRejected = item.approvalStatus === 'REJECTED';
           const isPaid = item.reimbursementStatus === 'PAID';
           const isReviewing = reviewingId === item.id;
 
@@ -164,17 +195,54 @@ export default function ExpenseGroupDetailScreen() {
                 <Text style={styles.itemDesc}>{item.description}</Text>
               ) : null}
 
+              {/* Payment Source Badge & Statuses */}
               <View style={styles.badgesRow}>
+                <View
+                  style={[
+                    styles.sourceBadge,
+                    isCompanyFund ? styles.sourceBadgeCompany : styles.sourceBadgeSelf,
+                  ]}
+                >
+                  {isCompanyFund ? (
+                    <Building2 size={13} color={COLORS.warningDark} />
+                  ) : (
+                    <User size={13} color={COLORS.primary} />
+                  )}
+                  <Text
+                    style={[
+                      styles.sourceBadgeLabel,
+                      { color: isCompanyFund ? COLORS.warningDark : COLORS.primary },
+                    ]}
+                  >
+                    {isCompanyFund ? 'By Company Fund' : 'By Self (Employee Paid)'}
+                  </Text>
+                </View>
+
                 <StatusBadge status={item.approvalStatus} />
-                <StatusBadge status={item.reimbursementStatus} />
-                <Text style={styles.itemTimestamp}>
-                  {formatDateTime(item.createdAt)}
-                </Text>
+
+                {!isCompanyFund && (
+                  <StatusBadge status={item.reimbursementStatus} />
+                )}
               </View>
+
+              {/* Notes / Footnotes based on payment source */}
+              {isCompanyFund ? (
+                <View style={styles.companyFundNote}>
+                  <CheckCircle2 size={13} color={COLORS.warningDark} />
+                  <Text style={styles.companyFundNoteText}>
+                    Direct company outflow. Deducted from company cash (no reimbursement needed).
+                  </Text>
+                </View>
+              ) : (
+                <Text style={styles.itemTimestamp}>
+                  Submitted on {formatDateTime(item.createdAt)}
+                </Text>
+              )}
 
               {/* Admin Actions */}
               {isAdmin && (
                 <View style={styles.adminActionRow}>
+                  {/* Both types can be Approved or Rejected when submitted */}
                   {isSubmitted && (
                     <>
                       <Button
@@ -182,7 +250,7 @@ export default function ExpenseGroupDetailScreen() {
                         size="sm"
                         variant="secondary"
                         loading={isReviewing}
-                        onPress={() => handleReview(item, 'APPROVED', 'UNPAID')}
+                        onPress={() => handleReview(item, 'APPROVED', isCompanyFund ? 'PAID' : 'UNPAID')}
                         style={{ flex: 1 }}
                       />
                       <Button
@@ -196,15 +264,26 @@ export default function ExpenseGroupDetailScreen() {
                     </>
                   )}
 
-                  {isApproved && !isPaid && (
+                  {/* ONLY Employee-paid items can be disbursed / reimbursed */}
+                  {!isCompanyFund && isApproved && !isPaid && (
                     <Button
-                      title="Disburse / Mark Paid"
+                      title="Disburse / Reimburse Employee"
                       size="sm"
                       variant="primary"
                       loading={isReviewing}
                       onPress={() => handleReview(item, 'APPROVED', 'PAID')}
                       style={{ flex: 1 }}
                     />
+                  )}
+
+                  {/* For company-funded items that are approved, show confirmed status */}
+                  {isCompanyFund && isApproved && (
+                    <View style={styles.verifiedRow}>
+                      <CheckCircle2 size={16} color={COLORS.success} />
+                      <Text style={styles.verifiedText}>
+                        Approved company expense (funds already deducted)
+                      </Text>
+                    </View>
                   )}
                 </View>
               )}
@@ -238,12 +317,13 @@ const styles = StyleSheet.create({
     height: 40,
     alignItems: 'center',
     justifyContent: 'center',
+    borderRadius: RADIUS.full,
   },
   headerCenter: {
     alignItems: 'center',
   },
   headerTitle: {
-    ...TYPOGRAPHY.h3,
+    ...TYPOGRAPHY.h2,
     color: COLORS.textPrimary,
   },
   headerSubtitle: {
@@ -251,11 +331,11 @@ const styles = StyleSheet.create({
     color: COLORS.textSecondary,
   },
   scrollContent: {
-    padding: SPACING.lg,
+    padding: SPACING.md,
   },
   summaryCard: {
-    padding: SPACING.xl,
-    marginBottom: SPACING.lg,
+    padding: SPACING.md,
+    marginBottom: SPACING.md,
   },
   summaryRow: {
     flexDirection: 'row',
@@ -267,19 +347,22 @@ const styles = StyleSheet.create({
     color: COLORS.textSecondary,
   },
   summaryAmount: {
-    ...TYPOGRAPHY.amountHero,
+    ...TYPOGRAPHY.h1,
     color: COLORS.textPrimary,
+    marginTop: 2,
   },
   summaryMeta: {
     ...TYPOGRAPHY.bodySmall,
     color: COLORS.textTertiary,
+    marginTop: 2,
   },
   statusCol: {
+    gap: 4,
     alignItems: 'flex-end',
-    gap: SPACING.xs,
   },
   metricRow: {
     flexDirection: 'row',
+    alignItems: 'center',
     gap: SPACING.xs,
   },
   metricLabel: {
@@ -287,17 +370,19 @@ const styles = StyleSheet.create({
     color: COLORS.textSecondary,
   },
   metricValue: {
-    ...TYPOGRAPHY.bodySmall,
+    ...TYPOGRAPHY.labelSmall,
     fontWeight: '700',
   },
   sectionTitle: {
-    ...TYPOGRAPHY.h3,
+    ...TYPOGRAPHY.labelLarge,
     color: COLORS.textPrimary,
+    fontWeight: '700',
     marginBottom: SPACING.sm,
+    marginTop: SPACING.xs,
   },
   itemCard: {
+    marginBottom: SPACING.sm,
     padding: SPACING.md,
-    marginVertical: SPACING.xs,
   },
   itemHeader: {
     flexDirection: 'row',
@@ -305,33 +390,72 @@ const styles = StyleSheet.create({
     alignItems: 'flex-start',
   },
   itemTitle: {
-    ...TYPOGRAPHY.h3,
+    ...TYPOGRAPHY.bodyMedium,
+    fontWeight: '700',
     color: COLORS.textPrimary,
   },
   itemCategory: {
     ...TYPOGRAPHY.bodySmall,
-    color: COLORS.textTertiary,
+    color: COLORS.textSecondary,
     marginTop: 2,
   },
   itemAmount: {
-    ...TYPOGRAPHY.amountLarge,
+    ...TYPOGRAPHY.labelLarge,
     color: COLORS.textPrimary,
+    fontWeight: '700',
   },
   itemDesc: {
-    ...TYPOGRAPHY.bodyMedium,
+    ...TYPOGRAPHY.bodySmall,
     color: COLORS.textSecondary,
-    marginVertical: SPACING.xs,
+    marginTop: SPACING.xs,
+    lineHeight: 18,
   },
   badgesRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: SPACING.sm,
+    gap: SPACING.xs,
     marginTop: SPACING.sm,
+    flexWrap: 'wrap',
+  },
+  sourceBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: RADIUS.full,
+    borderWidth: 1,
+  },
+  sourceBadgeCompany: {
+    borderColor: COLORS.warningDark,
+    backgroundColor: COLORS.warningLight,
+  },
+  sourceBadgeSelf: {
+    borderColor: COLORS.primary,
+    backgroundColor: COLORS.primaryLight,
+  },
+  sourceBadgeLabel: {
+    ...TYPOGRAPHY.labelSmall,
+    fontWeight: '600',
+    fontSize: 11,
+  },
+  companyFundNote: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    marginTop: SPACING.xs,
+  },
+  companyFundNoteText: {
+    ...TYPOGRAPHY.bodySmall,
+    color: COLORS.textTertiary,
+    fontSize: 11,
+    flex: 1,
   },
   itemTimestamp: {
     ...TYPOGRAPHY.bodySmall,
     color: COLORS.textTertiary,
-    marginLeft: 'auto',
+    fontSize: 11,
+    marginTop: 4,
   },
   adminActionRow: {
     flexDirection: 'row',
@@ -339,6 +463,17 @@ const styles = StyleSheet.create({
     marginTop: SPACING.md,
     paddingTop: SPACING.sm,
     borderTopWidth: 1,
-    borderTopColor: COLORS.surfaceVariant,
+    borderTopColor: COLORS.border,
+  },
+  verifiedRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: SPACING.xs,
+    paddingVertical: 4,
+  },
+  verifiedText: {
+    ...TYPOGRAPHY.bodySmall,
+    color: COLORS.success,
+    fontWeight: '600',
   },
 });
