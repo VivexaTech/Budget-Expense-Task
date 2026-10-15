@@ -2,6 +2,7 @@ import {
   collection,
   doc,
   setDoc,
+  addDoc,
   getDoc,
   updateDoc,
   query,
@@ -23,6 +24,7 @@ import {
 } from '@/types';
 import { callBackendApi } from './apiClient';
 import { recalculateTaskEligibility } from './taskService';
+import { removeUndefinedFields, sanitizePaymentRecord } from '@/utils/firestoreUtils';
 
 /**
  * Create a new Income Collection Task
@@ -50,12 +52,14 @@ export async function createIncomeTask(
   },
   user: UserProfile
 ): Promise<IncomeTask> {
+  const companyId = user.companyId || 'company_vivexa';
   const newRef = doc(collection(db, 'incomeTasks'));
   const now = new Date().toISOString();
   const amount = Number(data.expectedAmount);
 
-  const task: IncomeTask = {
+  const rawTask = {
     id: newRef.id,
+    companyId,
     clientId: data.clientId || undefined,
     clientName: data.clientName.trim(),
     clientPhone: data.clientPhone?.trim() || '',
@@ -71,9 +75,9 @@ export async function createIncomeTask(
     reminderDate: data.reminderDate || undefined,
     notes: data.notes?.trim() || '',
     monthKey: data.monthKey,
-    status: 'PENDING',
+    status: 'PENDING' as IncomeTaskStatus,
     invoicePreference: data.invoicePreference || 'ASK_EVERY_TIME',
-    invoiceStatus: 'NOT_GENERATED',
+    invoiceStatus: 'NOT_GENERATED' as const,
     createdByUid: user.uid,
     createdByEmployeeId: user.employeeId,
     createdByName: user.displayName,
@@ -85,12 +89,13 @@ export async function createIncomeTask(
     updatedAt: now,
   };
 
+  const task = removeUndefinedFields(rawTask) as IncomeTask;
   await setDoc(newRef, task);
+  await setDoc(doc(db, 'companies', companyId, 'incomeTasks', task.id), task);
 
   // Audit log
-  const auditRef = doc(collection(db, 'activityLogs'));
-  await setDoc(auditRef, {
-    id: auditRef.id,
+  const auditData = {
+    companyId,
     actorUid: user.uid,
     actorName: user.displayName,
     actorRole: user.role,
@@ -105,7 +110,9 @@ export async function createIncomeTask(
       monthKey: task.monthKey,
     },
     timestamp: now,
-  });
+  };
+  await addDoc(collection(db, 'companies', companyId, 'activityLogs'), auditData);
+  await addDoc(collection(db, 'activityLogs'), auditData);
 
   return task;
 }
@@ -180,9 +187,9 @@ export async function recordIncomeTaskPayment(
 
     const paymentId = `PAY_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
     const effectiveNextDueDate =
-      newRemaining > 0 && data.nextDueDate ? data.nextDueDate : task.dueDate;
+      newRemaining > 0 && data.nextDueDate ? data.nextDueDate : (task.dueDate || '');
 
-    newPaymentRecord = {
+    newPaymentRecord = sanitizePaymentRecord({
       id: paymentId,
       amount: paymentAmount,
       paymentMode: data.paymentMode,
@@ -191,12 +198,12 @@ export async function recordIncomeTaskPayment(
       receivedByEmployeeId: user.employeeId,
       receivedByName: user.displayName,
       notes: data.notes?.trim() || '',
-      nextDueDate: newRemaining > 0 ? effectiveNextDueDate : undefined,
+      nextDueDate: newRemaining > 0 && effectiveNextDueDate ? effectiveNextDueDate : undefined,
       incomeEntryId: incomeRef.id,
-    };
+    });
 
     // 1. Create Income Entry for the actual received amount ONLY
-    transaction.set(incomeRef, {
+    transaction.set(incomeRef, removeUndefinedFields({
       id: incomeRef.id,
       employeeId: user.employeeId,
       employeeUid: user.uid,
@@ -210,24 +217,28 @@ export async function recordIncomeTaskPayment(
       createdAt: now,
       status: 'VALID',
       incomeTaskId: task.id,
-    });
+    }));
 
     // 2. Update Income Collection Task
-    const updatedPayments = [...(task.payments || []), newPaymentRecord];
-    transaction.update(taskRef, {
+    const rawPayments = [...(task.payments || []), newPaymentRecord];
+    const updatedPayments = rawPayments.map((p) => sanitizePaymentRecord(p));
+
+    const taskUpdatePayload = removeUndefinedFields({
       receivedAmount: newReceived,
       remainingAmount: newRemaining,
       status: newStatus,
-      dueDate: effectiveNextDueDate,
+      dueDate: effectiveNextDueDate || task.dueDate || '',
       reminderDate: newRemaining > 0 && data.nextDueDate ? data.nextDueDate : (task.reminderDate || null),
       payments: updatedPayments,
       completedAt: newRemaining === 0 ? now : null,
       updatedAt: now,
     });
 
+    transaction.update(taskRef, taskUpdatePayload);
+
     // 3. Activity Audit Log
     const auditRef = doc(collection(db, 'activityLogs'));
-    transaction.set(auditRef, {
+    transaction.set(auditRef, removeUndefinedFields({
       id: auditRef.id,
       actorUid: user.uid,
       actorName: user.displayName,
@@ -245,16 +256,16 @@ export async function recordIncomeTaskPayment(
         isCompleted: newRemaining === 0,
       },
       timestamp: now,
-    });
+    }));
 
     updatedTask = {
       ...task,
       receivedAmount: newReceived,
       remainingAmount: newRemaining,
       status: newStatus,
-      dueDate: effectiveNextDueDate,
+      dueDate: effectiveNextDueDate || task.dueDate,
       payments: updatedPayments,
-      completedAt: newRemaining === 0 ? now : undefined,
+      ...(newRemaining === 0 ? { completedAt: now } : {}),
       updatedAt: now,
     };
   });
@@ -292,12 +303,12 @@ export async function updateIncomeTaskSchedule(
     throw new Error('Not authorized to update this task.');
   }
 
-  await updateDoc(taskRef, {
+  await updateDoc(taskRef, removeUndefinedFields({
     dueDate: data.dueDate,
     reminderDate: data.reminderDate || null,
-    notes: data.notes !== undefined ? data.notes : task.notes,
+    notes: data.notes !== undefined ? data.notes.trim() : (task.notes || ''),
     updatedAt: now,
-  });
+  }));
 
   // Audit log
   const auditRef = doc(collection(db, 'activityLogs'));
@@ -366,6 +377,7 @@ export function subscribeToIncomeTasks(
   user: UserProfile,
   callback: (tasks: IncomeTask[]) => void
 ) {
+  const userCompany = user.companyId || 'company_vivexa';
   let q;
   if (user.role === 'admin') {
     q = query(
@@ -384,7 +396,13 @@ export function subscribeToIncomeTasks(
     q,
     (snapshot) => {
       const list: IncomeTask[] = [];
-      snapshot.forEach((d) => list.push(d.data() as IncomeTask));
+      snapshot.forEach((d) => {
+        const item = d.data() as IncomeTask;
+        const itemCompany = item.companyId || 'company_vivexa';
+        if (itemCompany === userCompany) {
+          list.push(item);
+        }
+      });
       callback(list);
     },
     (err) => {

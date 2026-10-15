@@ -225,7 +225,7 @@ export async function exportMonthlyFinancialReport(
   }
 
   // Native Android/iOS delivery using expo-file-system and expo-sharing
-  const baseDir = FileSystem.documentDirectory || FileSystem.cacheDirectory;
+  const baseDir = (FileSystem.documentDirectory || FileSystem.cacheDirectory || '').replace(/\/?$/, '/');
   const fileUri = `${baseDir}${fileName}`;
 
   await FileSystem.writeAsStringAsync(fileUri, csvContent, {

@@ -9,6 +9,7 @@ import {
   TouchableOpacity,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { useRouter } from 'expo-router';
 import { Building2, ShieldCheck, UserCheck, AlertCircle } from 'lucide-react-native';
 import { COLORS, RADIUS, SPACING, TYPOGRAPHY, SHADOWS } from '@/constants/theme';
 import { useAuth } from '@/context/AuthContext';
@@ -17,6 +18,7 @@ import { Button } from '@/components/Button';
 import { LoginSchema } from '@/types';
 
 export default function LoginScreen() {
+  const router = useRouter();
   const { login } = useAuth();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -147,6 +149,16 @@ export default function LoginScreen() {
               </TouchableOpacity>
             </View>
           </View>
+
+          <TouchableOpacity
+            style={{ alignItems: 'center', marginTop: SPACING.lg, paddingVertical: SPACING.sm }}
+            onPress={() => router.push('/(auth)/register-company' as any)}
+          >
+            <Text style={{ fontSize: TYPOGRAPHY.fontSize.sm, color: COLORS.textSecondary }}>
+              Register a new organization?{' '}
+              <Text style={{ color: COLORS.primary, fontWeight: '700' }}>Create Workspace</Text>
+            </Text>
+          </TouchableOpacity>
 
           <View style={styles.footerNote}>
             <Text style={styles.footerText}>

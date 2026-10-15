@@ -20,6 +20,7 @@ import {
   UserProfile,
   IncomeTask,
 } from '@/types';
+import { removeUndefinedFields } from '@/utils/firestoreUtils';
 
 /**
  * Check for duplicate client records by name or mobile number
@@ -85,11 +86,13 @@ export async function createClient(
   },
   currentUser: UserProfile
 ): Promise<Client> {
+  const companyId = currentUser.companyId || 'company_vivexa';
   const clientRef = doc(collection(db, 'clients'));
   const now = new Date().toISOString();
 
   const newClient: Client = {
     id: clientRef.id,
+    companyId,
     clientName: data.clientName.trim(),
     companyName: data.companyName?.trim() || '',
     contactPerson: data.contactPerson?.trim() || '',
@@ -112,10 +115,13 @@ export async function createClient(
     updatedAt: now,
   };
 
-  await setDoc(clientRef, newClient);
+  const cleaned = removeUndefinedFields(newClient);
+  await setDoc(clientRef, cleaned);
+  await setDoc(doc(db, 'companies', companyId, 'clients', clientRef.id), cleaned);
 
   // Write audit log
-  await addDoc(collection(db, 'activityLogs'), {
+  const auditData = {
+    companyId,
     actorUid: currentUser.uid,
     actorName: currentUser.displayName,
     actorRole: currentUser.role,
@@ -124,7 +130,9 @@ export async function createClient(
     entityId: clientRef.id,
     description: `Created client profile: ${newClient.clientName} (Assigned to ${newClient.assignedEmployeeName})`,
     timestamp: now,
-  });
+  };
+  await addDoc(collection(db, 'companies', companyId, 'activityLogs'), auditData);
+  await addDoc(collection(db, 'activityLogs'), auditData);
 
   return newClient;
 }
@@ -137,15 +145,21 @@ export async function updateClient(
   updates: Partial<Omit<Client, 'id' | 'createdAt' | 'createdByUid' | 'createdByEmployeeId' | 'createdByName'>>,
   currentUser: UserProfile
 ): Promise<void> {
+  const companyId = currentUser.companyId || 'company_vivexa';
   const clientRef = doc(db, 'clients', clientId);
+  const companyClientRef = doc(db, 'companies', companyId, 'clients', clientId);
   const now = new Date().toISOString();
 
-  await updateDoc(clientRef, {
+  const cleanedUpdates = removeUndefinedFields({
     ...updates,
     updatedAt: now,
   });
 
-  await addDoc(collection(db, 'activityLogs'), {
+  await updateDoc(clientRef, cleanedUpdates).catch(() => {});
+  await setDoc(companyClientRef, cleanedUpdates, { merge: true }).catch(() => {});
+
+  const auditData = {
+    companyId,
     actorUid: currentUser.uid,
     actorName: currentUser.displayName,
     actorRole: currentUser.role,
@@ -154,7 +168,9 @@ export async function updateClient(
     entityId: clientId,
     description: `Updated client profile: ${updates.clientName || clientId}`,
     timestamp: now,
-  });
+  };
+  await addDoc(collection(db, 'companies', companyId, 'activityLogs'), auditData);
+  await addDoc(collection(db, 'activityLogs'), auditData);
 }
 
 /**
@@ -165,15 +181,19 @@ export async function toggleClientStatus(
   newStatus: ClientStatus,
   currentUser: UserProfile
 ): Promise<void> {
+  const companyId = currentUser.companyId || 'company_vivexa';
   const clientRef = doc(db, 'clients', clientId);
+  const companyClientRef = doc(db, 'companies', companyId, 'clients', clientId);
   const now = new Date().toISOString();
 
   await updateDoc(clientRef, {
     status: newStatus,
     updatedAt: now,
-  });
+  }).catch(() => {});
+  await setDoc(companyClientRef, { status: newStatus, updatedAt: now }, { merge: true }).catch(() => {});
 
-  await addDoc(collection(db, 'activityLogs'), {
+  const auditData = {
+    companyId,
     actorUid: currentUser.uid,
     actorName: currentUser.displayName,
     actorRole: currentUser.role,
@@ -182,20 +202,26 @@ export async function toggleClientStatus(
     entityId: clientId,
     description: `${newStatus === 'ACTIVE' ? 'Activated' : 'Archived'} client profile ${clientId}`,
     timestamp: now,
-  });
+  };
+  await addDoc(collection(db, 'companies', companyId, 'activityLogs'), auditData);
+  await addDoc(collection(db, 'activityLogs'), auditData);
 }
 
 /**
  * Fetch a single client by ID
  */
-export async function getClient(clientId: string): Promise<Client | null> {
-  const snap = await getDoc(doc(db, 'clients', clientId));
+export async function getClient(clientId: string, companyId = 'company_vivexa'): Promise<Client | null> {
+  let snap = await getDoc(doc(db, 'companies', companyId, 'clients', clientId));
+  if (!snap.exists()) {
+    snap = await getDoc(doc(db, 'clients', clientId));
+  }
   if (!snap.exists()) return null;
   return snap.data() as Client;
 }
 
 /**
- * Subscribe to clients collection with role-based filtering:
+ * Subscribe to clients collection with role-based and company filtering:
+ * - Filtered to currentUser.companyId
  * - Admins see all clients
  * - Employees see clients assigned to them or created by them
  */
@@ -203,6 +229,7 @@ export function subscribeToClients(
   currentUser: UserProfile,
   callback: (clients: Client[]) => void
 ) {
+  const userCompany = currentUser.companyId || 'company_vivexa';
   const q = query(collection(db, 'clients'), orderBy('createdAt', 'desc'));
 
   return onSnapshot(
@@ -211,6 +238,9 @@ export function subscribeToClients(
       const clients: Client[] = [];
       snapshot.forEach((docSnap) => {
         const c = docSnap.data() as Client;
+        const cCompany = c.companyId || 'company_vivexa';
+        if (cCompany !== userCompany) return;
+
         if (currentUser.role === 'admin') {
           clients.push(c);
         } else {

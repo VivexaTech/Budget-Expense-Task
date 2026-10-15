@@ -18,11 +18,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const cronSecretHeader = req.headers['x-cron-secret'];
     const expectedSecret = process.env.CRON_SECRET;
     let isAuthorized = false;
+    let authUser: { uid: string; email?: string; role?: string; companyId?: string; companyName?: string } | null = null;
 
     if (expectedSecret && (authHeader === `Bearer ${expectedSecret}` || cronSecretHeader === expectedSecret)) {
       isAuthorized = true;
     } else {
-      const authUser = await verifyAuthToken(authHeader);
+      authUser = await verifyAuthToken(authHeader);
       if (authUser) {
         isAuthorized = true;
       }
@@ -37,19 +38,30 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res.status(400).json({ error: 'Valid monthKey (YYYY-MM) is required.' });
     }
 
+    const companyId = req.body.companyId || authUser?.companyId || 'company_vivexa';
     const firestore = admin.firestore();
 
     // 1. Fetch Budget period config (to get openingBalance and targets)
-    const budgetDoc = await firestore.collection('budgets').doc(monthKey).get();
+    let budgetDoc = await firestore.collection('companies').doc(companyId).collection('budgets').doc(monthKey).get();
+    if (!budgetDoc.exists) {
+      budgetDoc = await firestore.collection('budgets').doc(monthKey).get();
+    }
     const budgetData = budgetDoc.data() || {};
     const openingBalance = Number(budgetData.openingBalance || 0);
 
     // 2. Fetch all valid income entries for monthKey
-    const incomeSnap = await firestore
-      .collection('incomeEntries')
+    let incomeSnap = await firestore
+      .collection('companies').doc(companyId).collection('incomeEntries')
       .where('monthKey', '==', monthKey)
       .where('status', '==', 'VALID')
       .get();
+    if (incomeSnap.empty) {
+      incomeSnap = await firestore
+        .collection('incomeEntries')
+        .where('monthKey', '==', monthKey)
+        .where('status', '==', 'VALID')
+        .get();
+    }
     
     let totalIncome = 0;
     incomeSnap.forEach((doc) => {
@@ -57,11 +69,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     });
 
     // 3. Fetch all completed fixed/recurring tasks (actual company payments)
-    const completedTasksSnap = await firestore
-      .collection('tasks')
+    let completedTasksSnap = await firestore
+      .collection('companies').doc(companyId).collection('tasks')
       .where('monthKey', '==', monthKey)
       .where('status', '==', 'COMPLETED')
       .get();
+    if (completedTasksSnap.empty) {
+      completedTasksSnap = await firestore
+        .collection('tasks')
+        .where('monthKey', '==', monthKey)
+        .where('status', '==', 'COMPLETED')
+        .get();
+    }
 
     let totalCompletedTasksAmount = 0;
     completedTasksSnap.forEach((doc) => {
@@ -69,10 +88,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     });
 
     // 4. Fetch all expenses for monthKey and sum actual company cash outflows
-    const expensesSnap = await firestore
-      .collection('expenseEntries')
+    let expensesSnap = await firestore
+      .collection('companies').doc(companyId).collection('expenseEntries')
       .where('monthKey', '==', monthKey)
       .get();
+    if (expensesSnap.empty) {
+      expensesSnap = await firestore
+        .collection('expenseEntries')
+        .where('monthKey', '==', monthKey)
+        .get();
+    }
 
     let totalPaidExpensesAmount = 0;
     expensesSnap.forEach((doc) => {
@@ -90,10 +115,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     // 6. Fetch pending and ready_to_complete tasks
     // Sort deterministically: dueDate ASC, createdAt ASC
-    const activeTasksSnap = await firestore
-      .collection('tasks')
+    let isCompanyTasks = true;
+    let activeTasksSnap = await firestore
+      .collection('companies').doc(companyId).collection('tasks')
       .where('monthKey', '==', monthKey)
       .get();
+    if (activeTasksSnap.empty) {
+      activeTasksSnap = await firestore
+        .collection('tasks')
+        .where('monthKey', '==', monthKey)
+        .get();
+      isCompanyTasks = false;
+    }
 
     interface TaskRecord {
       id: string;
@@ -136,50 +169,63 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     let updatedCount = 0;
 
     for (const task of uncompletedTasks) {
-      const taskRef = firestore.collection('tasks').doc(task.id);
+      const taskRef = isCompanyTasks
+        ? firestore.collection('companies').doc(companyId).collection('tasks').doc(task.id)
+        : firestore.collection('tasks').doc(task.id);
 
       if (remainingFunds >= task.amount) {
         // Sufficient unallocated funds exist
         remainingFunds -= task.amount;
 
         if (task.status !== 'READY_TO_COMPLETE' || task.allocatedAmount !== task.amount) {
-          batch.update(taskRef, {
+          const updatePayload = {
             status: 'READY_TO_COMPLETE',
             allocatedAmount: task.amount,
             eligibilityReason: `Covered by available funds (₹${availableBalance.toLocaleString('en-IN')})`,
             updatedAt: new Date().toISOString(),
-          });
+          };
+          batch.update(taskRef, updatePayload);
+          if (isCompanyTasks) {
+            batch.set(firestore.collection('tasks').doc(task.id), updatePayload, { merge: true });
+          }
           newlyReadyTasks.push(task);
           updatedCount++;
 
           // Create notification event if transitioned from PENDING
           if (task.status === 'PENDING') {
             const idempotencyKey = `READY_${task.id}_${monthKey}`;
-            const notifyRef = firestore.collection('notificationEvents').doc(idempotencyKey);
-            batch.set(notifyRef, {
+            const notifyRef = firestore.collection('companies').doc(companyId).collection('notificationEvents').doc(idempotencyKey);
+            const notifyPayload = {
               id: idempotencyKey,
+              companyId,
               eventType: 'TASK_READY',
               targetTaskId: task.id,
-              recipientUid: 'ALL_AUTHORIZED', // Handled by notification dispatcher
+              recipientUid: 'ALL_AUTHORIZED',
               idempotencyKey,
               title: 'Company Task Ready for Review',
               body: `${task.title} — ₹${task.amount.toLocaleString('en-IN')} is financially ready for review.`,
               status: 'QUEUED',
               createdAt: new Date().toISOString(),
               retryCount: 0,
-            }, { merge: true });
+            };
+            batch.set(notifyRef, notifyPayload, { merge: true });
+            batch.set(firestore.collection('notificationEvents').doc(idempotencyKey), notifyPayload, { merge: true });
           }
         }
       } else {
         // Insufficient funds
         if (task.status === 'READY_TO_COMPLETE') {
           // Revert back to PENDING due to legitimate financial adjustment
-          batch.update(taskRef, {
+          const revertPayload = {
             status: 'PENDING',
             allocatedAmount: 0,
             eligibilityReason: 'Awaiting sufficient unallocated income',
             updatedAt: new Date().toISOString(),
-          });
+          };
+          batch.update(taskRef, revertPayload);
+          if (isCompanyTasks) {
+            batch.set(firestore.collection('tasks').doc(task.id), revertPayload, { merge: true });
+          }
           revertedTasks.push(task);
           updatedCount++;
         }
@@ -190,7 +236,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       await batch.commit();
     }
 
-    // Dispatch real push notifications for newly ready tasks to all active users with tokens
+    // Dispatch real push notifications strictly to active users in this company
     if (newlyReadyTasks.length > 0) {
       try {
         const activeUsersSnap = await firestore
@@ -200,9 +246,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
         const tokens: string[] = [];
         activeUsersSnap.forEach((doc) => {
-          const t = doc.data()?.pushToken;
-          if (t && typeof t === 'string' && t.trim().length > 0 && !tokens.includes(t.trim())) {
-            tokens.push(t.trim());
+          const u = doc.data();
+          const userCompany = u.companyId || 'company_vivexa';
+          if (userCompany === companyId) {
+            const t = u.pushToken;
+            if (t && typeof t === 'string' && t.trim().length > 0 && !tokens.includes(t.trim())) {
+              tokens.push(t.trim());
+            }
           }
         });
 

@@ -61,7 +61,7 @@ import { callBackendApi } from '@/services/apiClient';
 
 export default function HomeDashboardScreen() {
   const router = useRouter();
-  const { user, isAdmin, isEmployee, selectedMonthKey, setSelectedMonthKey } = useAuth();
+  const { user, isAdmin, isEmployee, selectedMonthKey, setSelectedMonthKey, companyId, companyName } = useAuth();
 
   const [refreshing, setRefreshing] = useState(false);
   const [monthModalVisible, setMonthModalVisible] = useState(false);
@@ -80,13 +80,13 @@ export default function HomeDashboardScreen() {
 
   const todayStr = useMemo(() => new Date().toISOString().split('T')[0], []);
 
-  // Subscriptions
+  // Subscriptions scoped by companyId
   useEffect(() => {
-    const unsubBudget = subscribeToBudget(selectedMonthKey, setBudget);
-    const unsubTasks = subscribeToTasksForMonth(selectedMonthKey, setTasks);
-    const unsubIncome = subscribeToMonthIncome(selectedMonthKey, setIncomeEntries);
-    const unsubEntries = subscribeToMonthExpenses(selectedMonthKey, setExpenseEntries);
-    const unsubGroups = subscribeToMonthExpenseGroups(selectedMonthKey, setExpenseGroups);
+    const unsubBudget = subscribeToBudget(selectedMonthKey, setBudget, companyId);
+    const unsubTasks = subscribeToTasksForMonth(selectedMonthKey, setTasks, companyId);
+    const unsubIncome = subscribeToMonthIncome(selectedMonthKey, setIncomeEntries, companyId);
+    const unsubEntries = subscribeToMonthExpenses(selectedMonthKey, setExpenseEntries, companyId);
+    const unsubGroups = subscribeToMonthExpenseGroups(selectedMonthKey, setExpenseGroups, companyId);
     const unsubActivity = subscribeToRecentActivity(6, setRecentActivities);
 
     let unsubIncomeTasks = () => {};
@@ -103,19 +103,19 @@ export default function HomeDashboardScreen() {
       unsubActivity();
       unsubIncomeTasks();
     };
-  }, [selectedMonthKey, user]);
+  }, [selectedMonthKey, user, companyId]);
 
   // Auto-sync budget target if tasks are present but budget is not yet initialized
   useEffect(() => {
     if (tasks.length > 0 && (!budget || budget.monthlyTarget === 0)) {
-      syncBudgetTarget(selectedMonthKey).catch(() => {});
+      syncBudgetTarget(selectedMonthKey, companyId).catch(() => {});
     }
-  }, [tasks, budget, selectedMonthKey]);
+  }, [tasks, budget, selectedMonthKey, companyId]);
 
   // Derived Financial Calculations (Section A)
   const financials = useMemo(() => {
     const openingBalance = Number(budget?.openingBalance || 0);
-    const { monthlyTarget } = computeMonthlyTarget(budget, tasks);
+    const { monthlyTarget } = computeMonthlyTarget(budget, tasks, companyId, selectedMonthKey);
 
     // Sum valid income
     const incomeCollected = incomeEntries
@@ -188,7 +188,7 @@ export default function HomeDashboardScreen() {
   return (
     <SafeAreaView style={styles.safeArea}>
       <Header
-        title="Company Budget"
+        title={companyName || 'Company Budget'}
         showMonthPicker={true}
         onOpenMonthModal={() => setMonthModalVisible(true)}
       />

@@ -2,6 +2,38 @@ import { z } from 'zod';
 
 export type UserRole = 'admin' | 'employee';
 
+export interface CompanyProfile {
+  id: string; // e.g. "company_abc123" or "company_vivexa"
+  name: string; // e.g. "Google LLC"
+  slug: string; // e.g. "google"
+  ownerUid: string;
+  adminEmail: string;
+  adminName: string;
+  status: 'ACTIVE' | 'SUSPENDED';
+  currency: string; // Default 'INR'
+  timezone: string; // Default 'Asia/Kolkata'
+  logoUrl?: string;
+  businessAddress?: string;
+  city?: string;
+  state?: string;
+  pincode?: string;
+  gstin?: string;
+  contactPhone?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CompanyMember {
+  userId: string;
+  companyId: string;
+  role: UserRole;
+  employeeId: string;
+  displayName: string;
+  email: string;
+  active: boolean;
+  joinedAt: string;
+}
+
 export interface UserProfile {
   uid: string;
   employeeId: string;
@@ -9,6 +41,8 @@ export interface UserProfile {
   email: string;
   role: UserRole;
   active: boolean;
+  companyId?: string; // Tenant workspace ID (defaults to 'company_vivexa')
+  companyName?: string;
   pushToken?: string;
   createdAt: string;
   updatedAt?: string;
@@ -16,6 +50,7 @@ export interface UserProfile {
 
 export interface MonthlyBudget {
   monthKey: string; // Format: YYYY-MM
+  companyId?: string;
   timezone: string;
   fixedExpenseBudget: number;
   additionalExpectedExpenses: number;
@@ -34,6 +69,7 @@ export type TaskType = 'FIXED' | 'RECURRING';
 
 export interface FinancialTask {
   id: string;
+  companyId?: string;
   title: string;
   amount: number;
   description?: string;
@@ -69,6 +105,7 @@ export type PaymentMode = 'CASH' | 'UPI' | 'BANK_TRANSFER' | 'CHEQUE' | 'OTHER';
 
 export interface IncomeEntry {
   id: string;
+  companyId?: string;
   employeeId: string;
   employeeUid: string;
   employeeNameSnapshot: string;
@@ -100,6 +137,7 @@ export interface IncomePaymentRecord {
 
 export interface IncomeTask {
   id: string;
+  companyId?: string;
   clientId?: string;
   clientName: string;
   clientPhone?: string;
@@ -150,6 +188,7 @@ export type ReimbursementStatus = 'UNPAID' | 'PAID';
 
 export interface ExpenseEntry {
   id: string;
+  companyId?: string;
   employeeId: string;
   employeeUid: string;
   employeeNameSnapshot: string;
@@ -170,6 +209,7 @@ export interface ExpenseEntry {
 
 export interface ExpenseGroup {
   id: string; // "${employeeId}_${monthKey}"
+  companyId?: string;
   employeeId: string;
   employeeUid: string;
   employeeNameSnapshot: string;
@@ -233,6 +273,7 @@ export type ActivityAction =
 
 export interface ActivityLog {
   id: string;
+  companyId?: string;
   actorUid: string;
   actorName: string;
   actorRole: 'admin' | 'employee' | 'system';
@@ -246,6 +287,7 @@ export interface ActivityLog {
 
 export interface NotificationEvent {
   id: string;
+  companyId?: string;
   eventType: 'TASK_READY' | 'EXPENSE_STATUS_CHANGE' | 'TASK_COMPLETED';
   targetTaskId?: string;
   recipientUid: string;
@@ -358,6 +400,7 @@ export type ClientStatus = 'ACTIVE' | 'INACTIVE';
 
 export interface Client {
   id: string;
+  companyId?: string;
   clientName: string;
   companyName?: string;
   contactPerson?: string;
@@ -439,6 +482,13 @@ export interface SupplierBusinessSnapshot {
   contactPhone?: string;
   contactEmail?: string;
   logoUrl?: string;
+  signatureUrl?: string;
+  bankDetails?: {
+    bankName?: string;
+    accountNumber?: string;
+    ifscCode?: string;
+    upiId?: string;
+  };
   paymentTerms?: string;
   invoiceNotes?: string;
 }
@@ -471,6 +521,9 @@ export interface Invoice {
   isSameStateSupply: boolean;
   clientBillingDetailsSnapshot: ClientBillingSnapshot;
   supplierBusinessDetailsSnapshot: SupplierBusinessSnapshot;
+  companyId?: string;
+  templateId?: InvoiceTemplateId;
+  templateSnapshot?: InvoiceTemplateConfig;
   invoiceDate: string; // YYYY-MM-DD
   createdByUid: string;
   createdByEmployeeId: string;
@@ -480,6 +533,7 @@ export interface Invoice {
 }
 
 export interface InvoiceSettings {
+  companyId?: string;
   businessName: string;
   businessAddress: string;
   city?: string;
@@ -489,11 +543,22 @@ export interface InvoiceSettings {
   contactPhone?: string;
   contactEmail?: string;
   logoUrl?: string;
+  signatureUrl?: string;
+  bankDetails?: {
+    bankName?: string;
+    accountNumber?: string;
+    ifscCode?: string;
+    upiId?: string;
+  };
   defaultGstRate: number; // e.g. 18
   paymentTerms?: string;
   invoiceNotes?: string;
+  selectedTemplateId?: InvoiceTemplateId;
   updatedAt?: string;
   updatedBy?: string;
+  hasAuthorizationPinConfigured?: boolean;
+  hasAlternativePinConfigured?: boolean;
+  allowAlternativeInvoiceType?: boolean;
   hasGpinConfigured?: boolean;
   hasNpinConfigured?: boolean;
 }
@@ -510,5 +575,105 @@ export const InvoiceSettingsSchema = z.object({
   defaultGstRate: z.number().min(0).max(28),
   paymentTerms: z.string().optional(),
   invoiceNotes: z.string().optional(),
+  selectedTemplateId: z.enum(['CORPORATE', 'MINIMAL', 'MODERN_BLUE', 'CLASSIC_GST']).optional(),
 });
+
+// ==========================================
+// INVOICE TEMPLATES & CUSTOMIZATION
+// ==========================================
+
+export type InvoiceTemplateId = 'CORPORATE' | 'MINIMAL' | 'MODERN_BLUE' | 'CLASSIC_GST';
+
+export interface InvoiceTemplateConfig {
+  id: InvoiceTemplateId;
+  name: string;
+  description: string;
+  primaryColor: string;
+  accentColor: string;
+  heading: string;
+  showCompanyLogo: boolean;
+  showPaymentTerms: boolean;
+  showNotes: boolean;
+  showSignatureArea: boolean;
+  footerText?: string;
+  paymentTerms?: string;
+  invoiceNotes?: string;
+}
+
+export const DEFAULT_INVOICE_TEMPLATES: Record<InvoiceTemplateId, InvoiceTemplateConfig> = {
+  CORPORATE: {
+    id: 'CORPORATE',
+    name: 'Professional Corporate',
+    description: 'Crisp corporate layout with formal grid and structured headers.',
+    primaryColor: '#1A73E8',
+    accentColor: '#0D47A1',
+    heading: 'TAX INVOICE',
+    showCompanyLogo: true,
+    showPaymentTerms: true,
+    showNotes: true,
+    showSignatureArea: true,
+    footerText: 'This is a computer generated invoice and requires no physical signature.',
+  },
+  MINIMAL: {
+    id: 'MINIMAL',
+    name: 'Minimal Clean',
+    description: 'Subtle elegance, sleek typography, and airy spacing.',
+    primaryColor: '#202124',
+    accentColor: '#5F6368',
+    heading: 'INVOICE',
+    showCompanyLogo: true,
+    showPaymentTerms: true,
+    showNotes: true,
+    showSignatureArea: false,
+    footerText: 'Thank you for your business.',
+  },
+  MODERN_BLUE: {
+    id: 'MODERN_BLUE',
+    name: 'Modern Blue',
+    description: 'High-contrast modern palette with blue highlights and summary cards.',
+    primaryColor: '#0066CC',
+    accentColor: '#E8F0FE',
+    heading: 'COMMERCIAL INVOICE',
+    showCompanyLogo: true,
+    showPaymentTerms: true,
+    showNotes: true,
+    showSignatureArea: true,
+    footerText: 'We appreciate your prompt payment.',
+  },
+  CLASSIC_GST: {
+    id: 'CLASSIC_GST',
+    name: 'Classic GST',
+    description: 'Standard formal Indian GST compliant layout with SAC/HSN and tax splits.',
+    primaryColor: '#1E3A8A',
+    accentColor: '#3B82F6',
+    heading: 'TAX INVOICE (GST)',
+    showCompanyLogo: true,
+    showPaymentTerms: true,
+    showNotes: true,
+    showSignatureArea: true,
+    footerText: 'Certified that the particulars given above are true and correct.',
+  },
+};
+
+// ==========================================
+// SAAS REGISTRATION & SETTINGS
+// ==========================================
+
+export const RegisterCompanySchema = z
+  .object({
+    companyName: z.string().min(2, 'Company name must be at least 2 characters'),
+    adminName: z.string().min(2, 'Admin full name must be at least 2 characters'),
+    email: z.string().email('Please enter a valid business email address'),
+    password: z.string().min(6, 'Password must be at least 6 characters'),
+    confirmPassword: z.string().min(6, 'Confirm password must be at least 6 characters'),
+    phone: z.string().optional(),
+    state: z.string().optional(),
+  })
+  .refine((data) => data.password === data.confirmPassword, {
+    message: 'Passwords do not match',
+    path: ['confirmPassword'],
+  });
+
+export type CompanyRegistrationPayload = z.infer<typeof RegisterCompanySchema>;
+
 

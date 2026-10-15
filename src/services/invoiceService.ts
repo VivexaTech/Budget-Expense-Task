@@ -8,8 +8,10 @@ import {
   onSnapshot,
   getDocs,
 } from 'firebase/firestore';
+import { Platform } from 'react-native';
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
+import * as FileSystem from 'expo-file-system/legacy';
 import { db } from './firebase';
 import { callBackendApi } from './apiClient';
 import { Invoice, InvoiceSettings } from '@/types';
@@ -54,10 +56,15 @@ export async function getInvoiceSettings(): Promise<InvoiceSettings | null> {
 }
 
 /**
- * Update invoice settings and configure GPIN / NPIN (Admin only)
+ * Update invoice settings and configure authorization PINs (Admin only)
  */
 export async function updateInvoiceSettings(
-  settings: Partial<InvoiceSettings> & { gpin?: string; npin?: string }
+  settings: Partial<InvoiceSettings> & {
+    authorizationPin?: string;
+    alternativePin?: string;
+    gpin?: string;
+    npin?: string;
+  }
 ): Promise<{ success: boolean; error?: string }> {
   const result = await callBackendApi('/api/invoice-settings', 'POST', settings);
   return {
@@ -69,14 +76,23 @@ export async function updateInvoiceSettings(
 /**
  * Subscribe to all generated invoices
  */
-export function subscribeToInvoices(callback: (invoices: Invoice[]) => void) {
+export function subscribeToInvoices(
+  callback: (invoices: Invoice[]) => void,
+  companyId = 'company_vivexa'
+) {
   const q = query(collection(db, 'invoices'), orderBy('createdAt', 'desc'));
 
   return onSnapshot(
     q,
     (snapshot) => {
       const invoices: Invoice[] = [];
-      snapshot.forEach((d) => invoices.push(d.data() as Invoice));
+      snapshot.forEach((d) => {
+        const inv = d.data() as Invoice;
+        const invComp = inv.companyId || 'company_vivexa';
+        if (invComp === companyId) {
+          invoices.push(inv);
+        }
+      });
       callback(invoices);
     },
     (err) => {
@@ -88,9 +104,12 @@ export function subscribeToInvoices(callback: (invoices: Invoice[]) => void) {
 /**
  * Get an invoice by its document ID
  */
-export async function getInvoiceById(invoiceId: string): Promise<Invoice | null> {
+export async function getInvoiceById(invoiceId: string, companyId = 'company_vivexa'): Promise<Invoice | null> {
   try {
-    const snap = await getDoc(doc(db, 'invoices', invoiceId));
+    let snap = await getDoc(doc(db, 'companies', companyId, 'invoices', invoiceId));
+    if (!snap.exists()) {
+      snap = await getDoc(doc(db, 'invoices', invoiceId));
+    }
     if (!snap.exists()) return null;
     return snap.data() as Invoice;
   } catch (err) {
@@ -126,19 +145,64 @@ export async function getInvoicesForClient(clientId: string): Promise<Invoice[]>
 export async function generateAndShareInvoicePdf(invoice: Invoice): Promise<string> {
   const html = generateInvoiceHtml(invoice);
 
-  const { uri } = await Print.printToFileAsync({
+  // On Web, use the browser's native print/save-to-PDF dialog
+  if (Platform.OS === 'web') {
+    await Print.printAsync({ html });
+    return '';
+  }
+
+  // Generate PDF file with base64 data
+  // Base64 encoding allows us to write directly to the app's sandboxed documentDirectory.
+  // This completely eliminates Android FilePermissionService rejection:
+  // "Not allowed to read file under given URL" caused by unscoped Print cache directories.
+  const { uri, base64 } = await Print.printToFileAsync({
     html,
-    base64: false,
+    base64: true,
   });
+
+  const cleanNumber = (invoice.invoiceNumber || 'INV').replace(/[^a-zA-Z0-9_-]/g, '_');
+  const fileName = `Invoice_${cleanNumber}.pdf`;
+  const baseDir = (FileSystem.documentDirectory || FileSystem.cacheDirectory || '').replace(/\/?$/, '/');
+  const targetUri = `${baseDir}${fileName}`;
+
+  let shareTarget = uri;
+
+  try {
+    if (base64) {
+      await FileSystem.writeAsStringAsync(targetUri, base64, {
+        encoding: FileSystem.EncodingType.Base64,
+      });
+      shareTarget = targetUri;
+    } else if (uri && uri !== targetUri) {
+      await FileSystem.copyAsync({
+        from: uri,
+        to: targetUri,
+      });
+      shareTarget = targetUri;
+    }
+  } catch (fsErr) {
+    console.warn('[InvoiceService] FileSystem write/copy fallback:', fsErr);
+    shareTarget = uri;
+  }
+
+  // Ensure file exists before calling Sharing
+  try {
+    const fileInfo = await FileSystem.getInfoAsync(shareTarget);
+    if (!fileInfo.exists && uri) {
+      shareTarget = uri;
+    }
+  } catch (infoErr) {
+    console.warn('[InvoiceService] getInfoAsync error:', infoErr);
+  }
 
   const canShare = await Sharing.isAvailableAsync();
   if (canShare) {
-    await Sharing.shareAsync(uri, {
+    await Sharing.shareAsync(shareTarget, {
       mimeType: 'application/pdf',
-      UTI: '.pdf',
+      UTI: 'com.adobe.pdf',
       dialogTitle: `Invoice ${invoice.invoiceNumber}`,
     });
   }
 
-  return uri;
+  return shareTarget;
 }

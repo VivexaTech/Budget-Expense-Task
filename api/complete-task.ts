@@ -31,12 +31,26 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res.status(400).json({ error: 'Task ID is required.' });
     }
 
-    const taskRef = firestore.collection('tasks').doc(taskId);
+    const companyId = authUser.companyId || 'company_vivexa';
+    const companyTaskRef = firestore.collection('companies').doc(companyId).collection('tasks').doc(taskId);
+    let effectiveTaskRef = companyTaskRef;
+    let isRootTask = false;
+
+    let initialSnap = await companyTaskRef.get();
+    if (!initialSnap.exists) {
+      const rootTaskRef = firestore.collection('tasks').doc(taskId);
+      initialSnap = await rootTaskRef.get();
+      if (initialSnap.exists) {
+        effectiveTaskRef = rootTaskRef;
+        isRootTask = true;
+      }
+    }
+
     const now = new Date().toISOString();
 
     // Use Firestore transaction for safe concurrent completion
     const result = await firestore.runTransaction(async (transaction) => {
-      const taskDoc = await transaction.get(taskRef);
+      const taskDoc = await transaction.get(effectiveTaskRef);
       if (!taskDoc.exists) {
         throw new Error('Task not found.');
       }
@@ -52,19 +66,30 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         throw new Error(`Task is currently ${task.status}. Only READY_TO_COMPLETE tasks can be completed.`);
       }
 
-      // Mark completed
-      transaction.update(taskRef, {
+      const updatePayload = {
         status: 'COMPLETED',
         completedBy: authUser.uid,
         completedByName: callerData?.displayName || 'Admin',
         completedAt: now,
         paymentNotes: paymentNotes || 'Payment confirmed by administrator',
         updatedAt: now,
-      });
+      };
 
-      // Write immutable audit log
-      const auditRef = firestore.collection('activityLogs').doc();
-      transaction.set(auditRef, {
+      // Mark completed in effective task
+      transaction.update(effectiveTaskRef, updatePayload);
+
+      // If effective task was company subcollection, sync root task if present
+      if (!isRootTask) {
+        const rootDoc = await transaction.get(firestore.collection('tasks').doc(taskId));
+        if (rootDoc.exists) {
+          transaction.update(rootDoc.ref, updatePayload);
+        }
+      }
+
+      // Write company audit log
+      const companyAuditRef = firestore.collection('companies').doc(companyId).collection('activityLogs').doc();
+      const auditPayload = {
+        companyId,
         actorUid: authUser.uid,
         actorName: callerData?.displayName || 'Admin',
         actorRole: 'admin',
@@ -79,7 +104,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           paymentNotes: paymentNotes || null,
         },
         timestamp: now,
-      });
+      };
+
+      transaction.set(companyAuditRef, auditPayload);
+
+      // Dual write to root audit log
+      const rootAuditRef = firestore.collection('activityLogs').doc();
+      transaction.set(rootAuditRef, auditPayload);
 
       return {
         id: taskId,

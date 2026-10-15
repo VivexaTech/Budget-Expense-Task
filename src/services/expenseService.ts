@@ -43,6 +43,7 @@ export async function submitExpenseEntry(
   },
   user: UserProfile
 ): Promise<ExpenseEntry> {
+  const companyId = user.companyId || 'company_vivexa';
   const newRef = doc(collection(db, 'expenseEntries'));
   const now = new Date().toISOString();
   const groupId = `${user.employeeId}_${data.monthKey}`;
@@ -52,6 +53,7 @@ export async function submitExpenseEntry(
 
   const entry: ExpenseEntry = {
     id: newRef.id,
+    companyId,
     employeeId: user.employeeId,
     employeeUid: user.uid,
     employeeNameSnapshot: user.displayName,
@@ -70,14 +72,16 @@ export async function submitExpenseEntry(
 
   // Transaction to safely update both individual record and grouped summary
   await runTransaction(db, async (transaction) => {
-    // 1. Write individual entry
+    // 1. Write individual entry to root and company
     transaction.set(newRef, entry);
+    transaction.set(doc(db, 'companies', companyId, 'expenseEntries', newRef.id), entry);
 
     // 2. Fetch or create grouped summary
     const groupDoc = await transaction.get(groupRef);
     if (!groupDoc.exists()) {
       const newGroup: ExpenseGroup = {
         id: groupId,
+        companyId,
         employeeId: user.employeeId,
         employeeUid: user.uid,
         employeeNameSnapshot: user.displayName,
@@ -92,16 +96,18 @@ export async function submitExpenseEntry(
         updatedAt: now,
       };
       transaction.set(groupRef, newGroup);
+      transaction.set(doc(db, 'companies', companyId, 'expenseGroups', groupId), newGroup);
     } else {
       const g = groupDoc.data() as ExpenseGroup;
-      transaction.update(groupRef, {
+      const updatedGroup = {
         totalAmount: Number(g.totalAmount || 0) + amountNum,
         companyFundAmount: Number(g.companyFundAmount || 0) + (isCompanyFund ? amountNum : 0),
         selfPaidAmount: Number(g.selfPaidAmount || 0) + (isCompanyFund ? 0 : amountNum),
         entryCount: Number(g.entryCount || 0) + 1,
-        reviewStatus: 'PENDING',
         updatedAt: now,
-      });
+      };
+      transaction.update(groupRef, updatedGroup);
+      transaction.set(doc(db, 'companies', companyId, 'expenseGroups', groupId), updatedGroup, { merge: true });
     }
 
     // 3. Log audit event
@@ -243,7 +249,8 @@ export async function reviewExpenseEntry(
  */
 export function subscribeToMonthExpenses(
   monthKey: string,
-  callback: (entries: ExpenseEntry[]) => void
+  callback: (entries: ExpenseEntry[]) => void,
+  companyId = 'company_vivexa'
 ) {
   const q = query(
     collection(db, 'expenseEntries'),
@@ -255,7 +262,13 @@ export function subscribeToMonthExpenses(
     q,
     (snapshot) => {
       const entries: ExpenseEntry[] = [];
-      snapshot.forEach((d) => entries.push(d.data() as ExpenseEntry));
+      snapshot.forEach((d) => {
+        const item = d.data() as ExpenseEntry;
+        const itemComp = item.companyId || 'company_vivexa';
+        if (itemComp === companyId) {
+          entries.push(item);
+        }
+      });
       callback(entries);
     },
     (err) => {
@@ -267,7 +280,7 @@ export function subscribeToMonthExpenses(
 /**
  * Fetch all individual expense entries for a month once
  */
-export async function getMonthExpenses(monthKey: string): Promise<ExpenseEntry[]> {
+export async function getMonthExpenses(monthKey: string, companyId = 'company_vivexa'): Promise<ExpenseEntry[]> {
   const q = query(
     collection(db, 'expenseEntries'),
     where('monthKey', '==', monthKey),
@@ -275,7 +288,13 @@ export async function getMonthExpenses(monthKey: string): Promise<ExpenseEntry[]
   );
   const snap = await getDocs(q);
   const entries: ExpenseEntry[] = [];
-  snap.forEach((d) => entries.push(d.data() as ExpenseEntry));
+  snap.forEach((d) => {
+    const item = d.data() as ExpenseEntry;
+    const itemComp = item.companyId || 'company_vivexa';
+    if (itemComp === companyId) {
+      entries.push(item);
+    }
+  });
   return entries;
 }
 
@@ -284,7 +303,8 @@ export async function getMonthExpenses(monthKey: string): Promise<ExpenseEntry[]
  */
 export function subscribeToMonthExpenseGroups(
   monthKey: string,
-  callback: (groups: ExpenseGroup[]) => void
+  callback: (groups: ExpenseGroup[]) => void,
+  companyId = 'company_vivexa'
 ) {
   const q = query(
     collection(db, 'expenseGroups'),
@@ -296,7 +316,13 @@ export function subscribeToMonthExpenseGroups(
     q,
     (snapshot) => {
       const groups: ExpenseGroup[] = [];
-      snapshot.forEach((d) => groups.push(d.data() as ExpenseGroup));
+      snapshot.forEach((d) => {
+        const item = d.data() as ExpenseGroup;
+        const itemComp = item.companyId || 'company_vivexa';
+        if (itemComp === companyId) {
+          groups.push(item);
+        }
+      });
       callback(groups);
     },
     (err) => {

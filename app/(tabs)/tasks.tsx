@@ -60,7 +60,7 @@ type SortType = 'DUE_DATE' | 'AMOUNT_DESC' | 'TITLE';
 
 export default function TasksScreen() {
   const router = useRouter();
-  const { user, isAdmin, selectedMonthKey, setSelectedMonthKey } = useAuth();
+  const { user, isAdmin, selectedMonthKey, setSelectedMonthKey, companyId } = useAuth();
 
   // Top Priority Toggle: Expense Tasks (Primary) vs Income Collections (Secondary)
   const [activeSection, setActiveSection] = useState<MainSection>('EXPENSE');
@@ -113,22 +113,22 @@ export default function TasksScreen() {
 
   const todayStr = useMemo(() => new Date().toISOString().split('T')[0], []);
 
-  // Subscriptions
+  // Subscriptions scoped by companyId
   useEffect(() => {
-    const unsubTasks = subscribeToTasksForMonth(selectedMonthKey, setTasks);
+    const unsubTasks = subscribeToTasksForMonth(selectedMonthKey, setTasks, companyId);
     const unsubBudget = subscribeToBudget(selectedMonthKey, (b) => {
       setOpeningBalance(Number(b?.openingBalance || 0));
-    });
+    }, companyId);
     const unsubIncome = subscribeToMonthIncome(selectedMonthKey, (items) => {
       const validSum = items
         .filter((i) => i.status === 'VALID')
         .reduce((sum, i) => sum + i.amount, 0);
       setTotalIncome(validSum);
-    });
+    }, companyId);
     const unsubExpenses = subscribeToMonthExpenses(selectedMonthKey, (entries) => {
       const outflowSum = calculateCompanyExpenseOutflows(entries);
       setPaidExpenses(outflowSum);
-    });
+    }, companyId);
 
     let unsubIncomeTasks = () => {};
     if (user) {
@@ -142,7 +142,7 @@ export default function TasksScreen() {
       unsubExpenses();
       unsubIncomeTasks();
     };
-  }, [selectedMonthKey, user]);
+  }, [selectedMonthKey, user, companyId]);
 
   // Derived Available balance for expense tasks
   const completedTasksAmount = useMemo(() => {

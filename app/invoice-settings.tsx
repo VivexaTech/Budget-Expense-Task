@@ -32,9 +32,10 @@ import { COLORS, RADIUS, SPACING, TYPOGRAPHY } from '@/constants/theme';
 import { useAuth } from '@/context/AuthContext';
 import { Input } from '@/components/Input';
 import { Button } from '@/components/Button';
-import { InvoiceSettings } from '@/types';
+import { InvoiceSettings, InvoiceTemplateId } from '@/types';
 import { INDIAN_STATES } from '@/constants/states';
 import { getInvoiceSettings, updateInvoiceSettings } from '@/services/invoiceService';
+import { Palette, Check } from 'lucide-react-native';
 
 export default function InvoiceSettingsScreen() {
   const router = useRouter();
@@ -56,12 +57,14 @@ export default function InvoiceSettingsScreen() {
   const [defaultGstRate, setDefaultGstRate] = useState('18');
   const [paymentTerms, setPaymentTerms] = useState('');
   const [invoiceNotes, setInvoiceNotes] = useState('');
+  const [selectedTemplateId, setSelectedTemplateId] = useState<InvoiceTemplateId>('CORPORATE');
 
-  // PIN Status & updates
-  const [hasGpinConfigured, setHasGpinConfigured] = useState(false);
-  const [hasNpinConfigured, setHasNpinConfigured] = useState(false);
-  const [newGpin, setNewGpin] = useState('');
-  const [newNpin, setNewNpin] = useState('');
+  // Neutral PIN Status & updates
+  const [hasAuthorizationPinConfigured, setHasAuthorizationPinConfigured] = useState(false);
+  const [hasAlternativePinConfigured, setHasAlternativePinConfigured] = useState(false);
+  const [allowAlternativeInvoiceType, setAllowAlternativeInvoiceType] = useState(false);
+  const [newAuthorizationPin, setNewAuthorizationPin] = useState('');
+  const [newAlternativePin, setNewAlternativePin] = useState('');
 
   // State Modal
   const [showStateModal, setShowStateModal] = useState(false);
@@ -87,8 +90,12 @@ export default function InvoiceSettingsScreen() {
         setDefaultGstRate(String(settings.defaultGstRate !== undefined ? settings.defaultGstRate : '18'));
         setPaymentTerms(settings.paymentTerms || '');
         setInvoiceNotes(settings.invoiceNotes || '');
-        setHasGpinConfigured(!!settings.hasGpinConfigured);
-        setHasNpinConfigured(!!settings.hasNpinConfigured);
+        if (settings.selectedTemplateId) {
+          setSelectedTemplateId(settings.selectedTemplateId);
+        }
+        setHasAuthorizationPinConfigured(Boolean(settings.hasAuthorizationPinConfigured ?? settings.hasGpinConfigured));
+        setHasAlternativePinConfigured(Boolean(settings.hasAlternativePinConfigured ?? settings.hasNpinConfigured));
+        setAllowAlternativeInvoiceType(Boolean(settings.allowAlternativeInvoiceType));
       }
       setLoading(false);
     });
@@ -104,13 +111,13 @@ export default function InvoiceSettingsScreen() {
       return;
     }
 
-    if (newGpin && !/^\d{6}$/.test(newGpin.trim())) {
-      setErrorMessage('New GPIN must be exactly 6 numeric digits.');
+    if (newAuthorizationPin && !/^\d{6}$/.test(newAuthorizationPin.trim())) {
+      setErrorMessage('Authorization PIN must be exactly 6 numeric digits.');
       return;
     }
 
-    if (newNpin && !/^\d{6}$/.test(newNpin.trim())) {
-      setErrorMessage('New NPIN must be exactly 6 numeric digits.');
+    if (newAlternativePin && !/^\d{6}$/.test(newAlternativePin.trim())) {
+      setErrorMessage('Alternative Authorization PIN must be exactly 6 numeric digits.');
       return;
     }
 
@@ -130,23 +137,26 @@ export default function InvoiceSettingsScreen() {
         defaultGstRate: Number(defaultGstRate) || 18,
         paymentTerms: paymentTerms.trim(),
         invoiceNotes: invoiceNotes.trim(),
+        selectedTemplateId,
       };
 
-      if (newGpin.trim()) {
-        payload.gpin = newGpin.trim();
+      if (newAuthorizationPin.trim()) {
+        payload.authorizationPin = newAuthorizationPin.trim();
+        payload.gpin = newAuthorizationPin.trim(); // Backward compat
       }
 
-      if (newNpin.trim()) {
-        payload.npin = newNpin.trim();
+      if (newAlternativePin.trim()) {
+        payload.alternativePin = newAlternativePin.trim();
+        payload.npin = newAlternativePin.trim(); // Backward compat
       }
 
       const res = await updateInvoiceSettings(payload);
       if (res.success) {
-        if (newGpin.trim()) setHasGpinConfigured(true);
-        if (newNpin.trim()) setHasNpinConfigured(true);
-        setNewGpin('');
-        setNewNpin('');
-        Alert.alert('Settings Saved', 'Invoice business profile and authorization PINs updated successfully.', [
+        if (newAuthorizationPin.trim()) setHasAuthorizationPinConfigured(true);
+        if (newAlternativePin.trim()) setHasAlternativePinConfigured(true);
+        setNewAuthorizationPin('');
+        setNewAlternativePin('');
+        Alert.alert('Settings Saved', 'Invoice business profile and authorization settings updated successfully.', [
           { text: 'OK', onPress: () => router.back() },
         ]);
       } else {
@@ -301,47 +311,112 @@ export default function InvoiceSettingsScreen() {
             />
           </View>
 
-          {/* SECTION 3: TWO-PIN AUTHORIZATION SETUP */}
+          {/* SECTION 2.5: INVOICE TEMPLATE DESIGN */}
+          <View style={styles.sectionCard}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+              <Palette size={20} color={COLORS.primary} />
+              <Text style={styles.sectionTitle}>Invoice Layout Template</Text>
+            </View>
+            <Text style={styles.sectionSubtitle}>
+              Select the default PDF layout format used when issuing company invoices:
+            </Text>
+
+            <View style={{ gap: 10, marginTop: 8 }}>
+              {[
+                {
+                  id: 'CORPORATE' as InvoiceTemplateId,
+                  name: 'Professional Corporate',
+                  desc: 'Structured formal grid, corporate blue border, and signature verification box.',
+                  color: '#1A73E8',
+                },
+                {
+                  id: 'MINIMAL' as InvoiceTemplateId,
+                  name: 'Clean Minimalist',
+                  desc: 'Airy monochrome typography, sleek spacing, and uncluttered layout.',
+                  color: '#202124',
+                },
+                {
+                  id: 'MODERN_BLUE' as InvoiceTemplateId,
+                  name: 'Modern Gradient Blue',
+                  desc: 'High-contrast header banner, pill status badges, and rounded summary cards.',
+                  color: '#0066CC',
+                },
+                {
+                  id: 'CLASSIC_GST' as InvoiceTemplateId,
+                  name: 'Classic GST Format',
+                  desc: 'Standard Indian GST statutory compliance format with HSN/SAC breakdown table.',
+                  color: '#1E3A8A',
+                },
+              ].map((tpl) => {
+                const isSelected = selectedTemplateId === tpl.id;
+                return (
+                  <TouchableOpacity
+                    key={tpl.id}
+                    onPress={() => setSelectedTemplateId(tpl.id)}
+                    style={[
+                      styles.templateOptionCard,
+                      isSelected && { borderColor: tpl.color, backgroundColor: `${tpl.color}0D` },
+                    ]}
+                  >
+                    <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                        <View style={[styles.templateColorDot, { backgroundColor: tpl.color }]} />
+                        <Text style={[styles.templateName, isSelected && { color: tpl.color }]}>{tpl.name}</Text>
+                      </View>
+                      {isSelected && (
+                        <View style={[styles.checkCircle, { backgroundColor: tpl.color }]}>
+                          <Check size={14} color="#FFF" />
+                        </View>
+                      )}
+                    </View>
+                    <Text style={styles.templateDesc}>{tpl.desc}</Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+          </View>
+
+          {/* SECTION 3: INVOICE AUTHORIZATION PIN SETUP */}
           <View style={styles.sectionCard}>
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 4 }}>
               <ShieldCheck size={20} color={COLORS.primary} />
-              <Text style={styles.sectionTitle}>Two-PIN Authorization Security</Text>
+              <Text style={styles.sectionTitle}>Invoice Authorization Security</Text>
             </View>
             <Text style={styles.sectionSubtitle}>
-              Two separate 6-digit PINs authorize invoice generation and strictly determine the invoice type:
+              Configure your secure 6-digit PIN required to authorize and issue official client invoices:
             </Text>
 
-            {/* GPIN */}
+            {/* Primary Authorization PIN */}
             <View style={styles.pinConfigBox}>
               <View style={styles.pinConfigHeader}>
                 <View style={{ flex: 1 }}>
-                  <Text style={styles.pinConfigTitle}>GPIN (GST Tax Invoice)</Text>
+                  <Text style={styles.pinConfigTitle}>Invoice Authorization PIN</Text>
                   <Text style={styles.pinConfigDesc}>
-                    Generates Tax Invoice (VTX-YYYY-MM-NNN) with intra/inter-state tax breakdown.
+                    Required by team members to generate and lock invoices for completed tasks.
                   </Text>
                 </View>
                 <View
                   style={[
                     styles.statusPill,
-                    hasGpinConfigured ? styles.statusPillActive : styles.statusPillInactive,
+                    hasAuthorizationPinConfigured ? styles.statusPillActive : styles.statusPillInactive,
                   ]}
                 >
                   <Text
                     style={[
                       styles.statusPillText,
-                      hasGpinConfigured ? styles.statusPillTextActive : styles.statusPillTextInactive,
+                      hasAuthorizationPinConfigured ? styles.statusPillTextActive : styles.statusPillTextInactive,
                     ]}
                   >
-                    {hasGpinConfigured ? 'Active' : 'Unconfigured'}
+                    {hasAuthorizationPinConfigured ? 'Active' : 'Unconfigured'}
                   </Text>
                 </View>
               </View>
 
               <Input
-                label={hasGpinConfigured ? 'Change GPIN (Enter 6 digits)' : 'Set GPIN (Enter 6 digits)'}
+                label={hasAuthorizationPinConfigured ? 'Change Authorization PIN (6 digits)' : 'Set Authorization PIN (6 digits)'}
                 placeholder="6-digit PIN"
-                value={newGpin}
-                onChangeText={(val) => setNewGpin(val.replace(/\D/g, '').slice(0, 6))}
+                value={newAuthorizationPin}
+                onChangeText={(val) => setNewAuthorizationPin(val.replace(/\D/g, '').slice(0, 6))}
                 keyboardType="number-pad"
                 maxLength={6}
                 secureTextEntry
@@ -349,43 +424,45 @@ export default function InvoiceSettingsScreen() {
               />
             </View>
 
-            {/* NPIN */}
-            <View style={styles.pinConfigBox}>
-              <View style={styles.pinConfigHeader}>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.pinConfigTitle}>NPIN (Non-GST Commercial Invoice)</Text>
-                  <Text style={styles.pinConfigDesc}>
-                    Generates Commercial Invoice (VTN-YYYY-MM-NNN) without tax calculation.
-                  </Text>
-                </View>
-                <View
-                  style={[
-                    styles.statusPill,
-                    hasNpinConfigured ? styles.statusPillActive : styles.statusPillInactive,
-                  ]}
-                >
-                  <Text
+            {/* Alternative Authorization PIN (Only rendered if permitted by Super Admin) */}
+            {allowAlternativeInvoiceType && gstin.trim().length > 0 && (
+              <View style={styles.pinConfigBox}>
+                <View style={styles.pinConfigHeader}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.pinConfigTitle}>Alternative Authorization PIN</Text>
+                    <Text style={styles.pinConfigDesc}>
+                      Secondary authorization PIN for alternative invoice workflows.
+                    </Text>
+                  </View>
+                  <View
                     style={[
-                      styles.statusPillText,
-                      hasNpinConfigured ? styles.statusPillTextActive : styles.statusPillTextInactive,
+                      styles.statusPill,
+                      hasAlternativePinConfigured ? styles.statusPillActive : styles.statusPillInactive,
                     ]}
                   >
-                    {hasNpinConfigured ? 'Active' : 'Unconfigured'}
-                  </Text>
+                    <Text
+                      style={[
+                        styles.statusPillText,
+                        hasAlternativePinConfigured ? styles.statusPillTextActive : styles.statusPillTextInactive,
+                      ]}
+                    >
+                      {hasAlternativePinConfigured ? 'Active' : 'Unconfigured'}
+                    </Text>
+                  </View>
                 </View>
-              </View>
 
-              <Input
-                label={hasNpinConfigured ? 'Change NPIN (Enter 6 digits)' : 'Set NPIN (Enter 6 digits)'}
-                placeholder="6-digit PIN"
-                value={newNpin}
-                onChangeText={(val) => setNewNpin(val.replace(/\D/g, '').slice(0, 6))}
-                keyboardType="number-pad"
-                maxLength={6}
-                secureTextEntry
-                leftIcon={<KeyRound size={18} color={COLORS.textSecondary} />}
-              />
-            </View>
+                <Input
+                  label={hasAlternativePinConfigured ? 'Change Alternative PIN (6 digits)' : 'Set Alternative PIN (6 digits)'}
+                  placeholder="6-digit PIN"
+                  value={newAlternativePin}
+                  onChangeText={(val) => setNewAlternativePin(val.replace(/\D/g, '').slice(0, 6))}
+                  keyboardType="number-pad"
+                  maxLength={6}
+                  secureTextEntry
+                  leftIcon={<KeyRound size={18} color={COLORS.textSecondary} />}
+                />
+              </View>
+            )}
 
             <View style={styles.securityNote}>
               <Text style={styles.securityNoteText}>
@@ -671,5 +748,35 @@ const styles = StyleSheet.create({
   stateItemTextActive: {
     color: COLORS.primary,
     fontWeight: '700',
+  },
+  templateOptionCard: {
+    padding: SPACING.md,
+    borderRadius: RADIUS.md,
+    borderWidth: 1.5,
+    borderColor: '#e2e8f0',
+    backgroundColor: '#ffffff',
+  },
+  templateColorDot: {
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+  },
+  templateName: {
+    fontSize: TYPOGRAPHY.fontSize.sm,
+    fontWeight: '700',
+    color: COLORS.text,
+  },
+  templateDesc: {
+    fontSize: TYPOGRAPHY.fontSize.xs,
+    color: COLORS.textSecondary,
+    marginTop: 4,
+    lineHeight: 18,
+  },
+  checkCircle: {
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
 });

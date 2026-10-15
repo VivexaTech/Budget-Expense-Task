@@ -12,70 +12,22 @@ import { db } from './firebase';
 import { MonthlyBudget, UserProfile, FinancialTask } from '@/types';
 import { getCurrentMonthKey } from '@/utils/formatters';
 
-/**
- * Pure calculation to determine authoritative Monthly Target.
- * 
- * Formula:
- * If overridden: returns overrideTarget.
- * Otherwise: effectiveFixedExpenses + additionalExpectedExpenses + profitTarget.
- * 
- * To prevent double-counting:
- * Effective fixed expenses = max(configuredFixedExpenseBudget, sum of non-cancelled tasks).
- * If configuredFixedExpenseBudget is 0, the sum of non-cancelled tasks is used.
- */
-export function computeMonthlyTarget(
-  budget: MonthlyBudget | null,
-  tasks: FinancialTask[]
-): {
-  monthlyTarget: number;
-  fixedExpenses: number;
-  additionalExpenses: number;
-  profitTarget: number;
-  isOverridden: boolean;
-} {
-  const isOverridden = Boolean(budget?.isOverridden && budget?.monthlyTarget && budget.monthlyTarget > 0);
+import { computeMonthlyTarget as pureComputeMonthlyTarget } from '@/utils/financialCalculations';
 
-  // Sum active, non-cancelled tasks for this month
-  const activeTasksSum = tasks
-    .filter((t) => t.status !== 'CANCELLED')
-    .reduce((sum, t) => sum + (Number(t.amount) || 0), 0);
-
-  const configuredFixed = Number(budget?.fixedExpenseBudget) || 0;
-
-  // Fixed expenses is either the configured amount or the tasks sum. Never add them together to avoid double counting!
-  const fixedExpenses = configuredFixed > 0 ? Math.max(configuredFixed, activeTasksSum) : activeTasksSum;
-  const additionalExpenses = Number(budget?.additionalExpectedExpenses) || 0;
-  const profitTarget = Number(budget?.profitTarget) || 0;
-
-  if (isOverridden) {
-    return {
-      monthlyTarget: Number(budget!.monthlyTarget),
-      fixedExpenses,
-      additionalExpenses,
-      profitTarget,
-      isOverridden: true,
-    };
-  }
-
-  const calculatedTarget = fixedExpenses + additionalExpenses + profitTarget;
-
-  return {
-    monthlyTarget: calculatedTarget,
-    fixedExpenses,
-    additionalExpenses,
-    profitTarget,
-    isOverridden: false,
-  };
-}
+export const computeMonthlyTarget = pureComputeMonthlyTarget;
 
 /**
- * Fetch budget configuration for given monthKey
+ * Fetch budget configuration for given monthKey and companyId
  */
-export async function getBudgetForMonth(monthKey: string): Promise<MonthlyBudget | null> {
+export async function getBudgetForMonth(monthKey: string, companyId = 'company_vivexa'): Promise<MonthlyBudget | null> {
   try {
-    const docSnap = await getDoc(doc(db, 'budgets', monthKey));
-    if (docSnap.exists()) {
-      return docSnap.data() as MonthlyBudget;
+    const compBudgetSnap = await getDoc(doc(db, 'companies', companyId, 'budgets', monthKey));
+    if (compBudgetSnap.exists()) {
+      return compBudgetSnap.data() as MonthlyBudget;
+    }
+    const rootSnap = await getDoc(doc(db, 'budgets', monthKey));
+    if (rootSnap.exists()) {
+      return rootSnap.data() as MonthlyBudget;
     }
     return null;
   } catch (error) {
@@ -85,27 +37,45 @@ export async function getBudgetForMonth(monthKey: string): Promise<MonthlyBudget
 }
 
 /**
- * Synchronize and persist monthly target in Firestore for a given monthKey.
- * Queries active tasks, computes target using business rules, and updates budgets/{monthKey}.
+ * Synchronize and persist monthly target in Firestore for a given monthKey and companyId.
+ * Queries active tasks for the tenant, computes target using authoritative rules,
+ * and updates both company subcollection and root document.
  */
-export async function syncBudgetTarget(monthKey: string): Promise<MonthlyBudget> {
-  const budgetRef = doc(db, 'budgets', monthKey);
-  const budgetSnap = await getDoc(budgetRef);
+export async function syncBudgetTarget(monthKey: string, companyId = 'company_vivexa'): Promise<MonthlyBudget> {
+  const compBudgetRef = doc(db, 'companies', companyId, 'budgets', monthKey);
+  const rootBudgetRef = doc(db, 'budgets', monthKey);
+  
+  let budgetSnap = await getDoc(compBudgetRef);
+  if (!budgetSnap.exists()) {
+    budgetSnap = await getDoc(rootBudgetRef);
+  }
   const existingBudget = budgetSnap.exists() ? (budgetSnap.data() as MonthlyBudget) : null;
 
-  // Query active tasks for this month
-  const tasksQuery = query(collection(db, 'tasks'), where('monthKey', '==', monthKey));
-  const tasksSnap = await getDocs(tasksQuery);
+  // Query tasks specifically for this company and monthKey
+  const compTasksSnap = await getDocs(
+    query(collection(db, 'companies', companyId, 'tasks'), where('monthKey', '==', monthKey))
+  );
   const tasks: FinancialTask[] = [];
-  tasksSnap.forEach((d) => {
-    tasks.push(d.data() as FinancialTask);
-  });
+  if (!compTasksSnap.empty) {
+    compTasksSnap.forEach((d) => tasks.push(d.data() as FinancialTask));
+  } else {
+    // Check root tasks filtered strictly by companyId
+    const rootTasksQuery = query(collection(db, 'tasks'), where('monthKey', '==', monthKey));
+    const rootSnap = await getDocs(rootTasksQuery);
+    rootSnap.forEach((d) => {
+      const t = d.data() as FinancialTask;
+      if ((t.companyId || 'company_vivexa') === companyId) {
+        tasks.push(t);
+      }
+    });
+  }
 
-  const { monthlyTarget, fixedExpenses } = computeMonthlyTarget(existingBudget, tasks);
+  const { monthlyTarget, fixedExpenses } = computeMonthlyTarget(existingBudget, tasks, companyId, monthKey);
   const now = new Date().toISOString();
 
   const updatedBudget: MonthlyBudget = {
     monthKey,
+    companyId,
     timezone: existingBudget?.timezone || 'Asia/Kolkata',
     openingBalance: Number(existingBudget?.openingBalance || 0),
     fixedExpenseBudget: fixedExpenses,
@@ -119,7 +89,10 @@ export async function syncBudgetTarget(monthKey: string): Promise<MonthlyBudget>
     updatedBy: existingBudget?.updatedBy || 'system',
   };
 
-  await setDoc(budgetRef, updatedBudget, { merge: true });
+  await setDoc(compBudgetRef, updatedBudget, { merge: true });
+  if (companyId === 'company_vivexa') {
+    await setDoc(rootBudgetRef, updatedBudget, { merge: true });
+  }
   return updatedBudget;
 }
 
@@ -128,26 +101,33 @@ export async function syncBudgetTarget(monthKey: string): Promise<MonthlyBudget>
  */
 export function subscribeToBudget(
   monthKey: string,
-  callback: (budget: MonthlyBudget | null) => void
+  callback: (budget: MonthlyBudget | null) => void,
+  companyId = 'company_vivexa'
 ) {
   return onSnapshot(
-    doc(db, 'budgets', monthKey),
+    doc(db, 'companies', companyId, 'budgets', monthKey),
     (snapshot) => {
       if (snapshot.exists()) {
         callback(snapshot.data() as MonthlyBudget);
       } else {
-        // Return default skeleton budget if not yet created for this month
-        callback({
-          monthKey,
-          timezone: 'Asia/Kolkata',
-          fixedExpenseBudget: 0,
-          additionalExpectedExpenses: 0,
-          profitTarget: 0,
-          monthlyTarget: 0,
-          openingBalance: 0,
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-          updatedBy: 'system',
+        getDoc(doc(db, 'budgets', monthKey)).then((rootSnap) => {
+          if (rootSnap.exists()) {
+            callback(rootSnap.data() as MonthlyBudget);
+          } else {
+            callback({
+              monthKey,
+              companyId,
+              timezone: 'Asia/Kolkata',
+              fixedExpenseBudget: 0,
+              additionalExpectedExpenses: 0,
+              profitTarget: 0,
+              monthlyTarget: 0,
+              openingBalance: 0,
+              createdAt: new Date().toISOString(),
+              updatedAt: new Date().toISOString(),
+              updatedBy: 'system',
+            });
+          }
         });
       }
     },
@@ -173,12 +153,16 @@ export async function saveBudgetConfiguration(
   },
   adminUser: UserProfile
 ): Promise<MonthlyBudget> {
+  const companyId = adminUser.companyId || 'company_vivexa';
   // Query tasks to ensure fixedExpenseBudget properly accounts for active tasks without double counting
   const tasksQuery = query(collection(db, 'tasks'), where('monthKey', '==', monthKey));
   const tasksSnap = await getDocs(tasksQuery);
   const tasks: FinancialTask[] = [];
   tasksSnap.forEach((d) => {
-    tasks.push(d.data() as FinancialTask);
+    const t = d.data() as FinancialTask;
+    if ((t.companyId || 'company_vivexa') === companyId) {
+      tasks.push(t);
+    }
   });
 
   const activeTasksSum = tasks
@@ -197,6 +181,7 @@ export async function saveBudgetConfiguration(
 
   const budget: MonthlyBudget = {
     monthKey,
+    companyId,
     timezone: 'Asia/Kolkata',
     fixedExpenseBudget: effectiveFixed,
     additionalExpectedExpenses: Number(data.additionalExpectedExpenses),
@@ -211,10 +196,11 @@ export async function saveBudgetConfiguration(
   };
 
   await setDoc(doc(db, 'budgets', monthKey), budget, { merge: true });
+  await setDoc(doc(db, 'companies', companyId, 'budgets', monthKey), budget, { merge: true });
 
   // Record audit log
-  await setDoc(doc(collection(db, 'activityLogs')), {
-    id: doc(collection(db, 'activityLogs')).id,
+  const auditData = {
+    companyId,
     actorUid: adminUser.uid,
     actorName: adminUser.displayName,
     actorRole: 'admin',
@@ -224,7 +210,9 @@ export async function saveBudgetConfiguration(
     description: `Updated budget for ${monthKey}: Target = ₹${calculatedTarget.toLocaleString('en-IN')}`,
     metadata: { ...budget },
     timestamp: now,
-  });
+  };
+  await setDoc(doc(collection(db, 'companies', companyId, 'activityLogs')), auditData);
+  await setDoc(doc(collection(db, 'activityLogs')), auditData);
 
   return budget;
 }

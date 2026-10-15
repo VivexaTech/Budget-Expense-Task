@@ -20,33 +20,52 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     const firestore = admin.firestore();
-    const settingsDocRef = firestore.collection('systemConfig').doc('invoiceSettings');
+    const companyId = authUser.companyId || 'company_vivexa';
+    const companySettingsRef = firestore.collection('companies').doc(companyId).collection('settings').doc('general');
+    const legacySettingsRef = firestore.collection('systemConfig').doc('invoiceSettings');
 
     // GET: Return public business details & pin configuration status (no hashes!)
     if (req.method === 'GET') {
-      const doc = await settingsDocRef.get();
+      let doc = await companySettingsRef.get();
       if (!doc.exists) {
-        // Return default profile
+        doc = await legacySettingsRef.get();
+      }
+
+      if (!doc.exists) {
         return res.status(200).json({
-          businessName: 'Vivexa Technologies',
-          businessAddress: 'Corporate Towers, Tech Park',
-          city: 'Mumbai',
+          companyId,
+          businessName: authUser.companyName || 'My Company',
+          businessAddress: '',
+          city: '',
           state: 'Maharashtra',
-          pincode: '400001',
+          pincode: '',
           gstin: '',
           contactPhone: '',
-          contactEmail: '',
+          contactEmail: authUser.email || '',
           defaultGstRate: 18,
           paymentTerms: 'Payment due upon receipt of invoice.',
           invoiceNotes: 'Thank you for your business.',
+          selectedTemplateId: 'CORPORATE',
+          hasAuthorizationPinConfigured: false,
+          hasAlternativePinConfigured: false,
+          allowAlternativeInvoiceType: false,
+          defaultInvoiceType: 'NON_GST',
+          // Legacy backwards compatibility:
           hasGpinConfigured: false,
           hasNpinConfigured: false,
         });
       }
 
       const data = doc.data() || {};
+      const hasGstin = Boolean(data.gstin && String(data.gstin).trim().length > 0);
+      const allowAlternativeInvoiceType = Boolean(data.allowAlternativeInvoiceType);
+      
+      const hasPrimary = Boolean(data.primaryPinHash || (hasGstin ? data.gpinHash : data.npinHash));
+      const hasAlternative = Boolean(data.alternativePinHash || (hasGstin ? data.npinHash : data.gpinHash));
+
       return res.status(200).json({
-        businessName: data.businessName || 'Vivexa Technologies',
+        companyId,
+        businessName: data.businessName || authUser.companyName || 'My Company',
         businessAddress: data.businessAddress || '',
         city: data.city || '',
         state: data.state || 'Maharashtra',
@@ -55,11 +74,24 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         contactPhone: data.contactPhone || '',
         contactEmail: data.contactEmail || '',
         logoUrl: data.logoUrl || '',
+        signatureUrl: data.signatureUrl || '',
         defaultGstRate: data.defaultGstRate !== undefined ? Number(data.defaultGstRate) : 18,
         paymentTerms: data.paymentTerms || 'Payment due upon receipt of invoice.',
         invoiceNotes: data.invoiceNotes || 'Thank you for your business.',
-        hasGpinConfigured: !!data.gpinHash,
-        hasNpinConfigured: !!data.npinHash,
+        selectedTemplateId: data.selectedTemplateId || 'CORPORATE',
+        bankDetails: data.bankDetails || {
+          bankName: data.bankName || '',
+          accountNumber: data.accountNumber || '',
+          ifscCode: data.ifscCode || '',
+          upiId: data.upiId || '',
+        },
+        hasAuthorizationPinConfigured: hasPrimary,
+        hasAlternativePinConfigured: hasAlternative,
+        allowAlternativeInvoiceType,
+        defaultInvoiceType: hasGstin ? 'GST' : 'NON_GST',
+        // Legacy compatibility
+        hasGpinConfigured: hasGstin ? hasPrimary : false,
+        hasNpinConfigured: hasGstin ? hasAlternative : hasPrimary,
         updatedAt: data.updatedAt,
         updatedBy: data.updatedBy,
       });
@@ -69,7 +101,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (req.method === 'POST' || req.method === 'PUT') {
       const callerDoc = await firestore.collection('users').doc(authUser.uid).get();
       const callerData = callerDoc.data();
-      if (callerData?.role !== 'admin') {
+      if (callerData?.role !== 'admin' && callerData?.role !== 'super_admin') {
         return res.status(403).json({ error: 'Only administrators can update invoice settings.' });
       }
 
@@ -83,9 +115,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         contactPhone,
         contactEmail,
         logoUrl,
+        signatureUrl,
         defaultGstRate,
         paymentTerms,
         invoiceNotes,
+        selectedTemplateId,
+        bankDetails,
+        // Neutral PIN keys
+        authorizationPin,
+        alternativePin,
+        // Legacy keys
         gpin,
         npin,
       } = req.body;
@@ -94,7 +133,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return res.status(400).json({ error: 'Business Name, Address, and State are required.' });
       }
 
-      const existingDoc = await settingsDocRef.get();
+      let existingDoc = await companySettingsRef.get();
+      if (!existingDoc.exists) {
+        existingDoc = await legacySettingsRef.get();
+      }
       const existingData = existingDoc.exists ? existingDoc.data() || {} : {};
 
       let pinSalt = existingData.pinSalt;
@@ -102,49 +144,71 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         pinSalt = crypto.randomBytes(16).toString('hex');
       }
 
+      const cleanGstin = gstin ? String(gstin).trim().toUpperCase() : '';
+      const hasGstin = cleanGstin.length > 0;
+      const allowAlternativeInvoiceType = Boolean(existingData.allowAlternativeInvoiceType);
+
       const updates: Record<string, any> = {
+        companyId,
         businessName: String(businessName).trim(),
         businessAddress: String(businessAddress).trim(),
         city: city ? String(city).trim() : '',
         state: String(state).trim(),
         pincode: pincode ? String(pincode).trim() : '',
-        gstin: gstin ? String(gstin).trim().toUpperCase() : '',
+        gstin: cleanGstin,
         contactPhone: contactPhone ? String(contactPhone).trim() : '',
         contactEmail: contactEmail ? String(contactEmail).trim() : '',
-        logoUrl: logoUrl || '',
+        logoUrl: logoUrl !== undefined ? logoUrl : existingData.logoUrl || '',
+        signatureUrl: signatureUrl !== undefined ? signatureUrl : existingData.signatureUrl || '',
         defaultGstRate: defaultGstRate !== undefined ? Number(defaultGstRate) : 18,
         paymentTerms: paymentTerms ? String(paymentTerms).trim() : 'Payment due upon receipt.',
         invoiceNotes: invoiceNotes ? String(invoiceNotes).trim() : 'Thank you for your business.',
+        selectedTemplateId: selectedTemplateId || existingData.selectedTemplateId || 'CORPORATE',
+        bankDetails: bankDetails || existingData.bankDetails || {},
         pinSalt,
         updatedAt: new Date().toISOString(),
         updatedBy: authUser.uid,
       };
 
-      if (gpin) {
-        if (!/^\d{6}$/.test(String(gpin).trim())) {
-          return res.status(400).json({ error: 'GPIN must be exactly 6 numeric digits.' });
+      // Resolve primary PIN from authorizationPin or legacy gpin/npin
+      const resolvedPrimaryPin = authorizationPin || (hasGstin ? gpin : npin);
+      if (resolvedPrimaryPin) {
+        if (!/^\d{6}$/.test(String(resolvedPrimaryPin).trim())) {
+          return res.status(400).json({ error: 'Authorization PIN must be exactly 6 numeric digits.' });
         }
-        updates.gpinHash = hashPin(String(gpin).trim(), pinSalt);
+        const primaryHash = hashPin(String(resolvedPrimaryPin).trim(), pinSalt);
+        updates.primaryPinHash = primaryHash;
+        if (hasGstin) {
+          updates.gpinHash = primaryHash;
+        } else {
+          updates.npinHash = primaryHash;
+        }
       }
 
-      if (npin) {
-        if (!/^\d{6}$/.test(String(npin).trim())) {
-          return res.status(400).json({ error: 'NPIN must be exactly 6 numeric digits.' });
+      // Resolve alternative PIN
+      const resolvedAlternativePin = alternativePin || (hasGstin ? npin : undefined);
+      if (resolvedAlternativePin) {
+        if (!/^\d{6}$/.test(String(resolvedAlternativePin).trim())) {
+          return res.status(400).json({ error: 'Alternative Authorization PIN must be exactly 6 numeric digits.' });
         }
-        updates.npinHash = hashPin(String(npin).trim(), pinSalt);
+        const altHash = hashPin(String(resolvedAlternativePin).trim(), pinSalt);
+        updates.alternativePinHash = altHash;
+        updates.npinHash = altHash;
       }
 
-      await settingsDocRef.set(updates, { merge: true });
+      // Save to company settings
+      await companySettingsRef.set(updates, { merge: true });
 
       // Audit log
-      await firestore.collection('activityLogs').add({
+      await firestore.collection('companies').doc(companyId).collection('activityLogs').add({
+        companyId,
         actorUid: authUser.uid,
         actorName: callerData?.displayName || 'Admin',
         actorRole: 'admin',
         action: 'INVOICE_SETTINGS_UPDATED',
         entityType: 'settings',
-        entityId: 'invoiceSettings',
-        description: `Updated invoice configuration${gpin || npin ? ' and authorization PINs' : ''}.`,
+        entityId: 'general',
+        description: `Updated invoice configuration${resolvedPrimaryPin || resolvedAlternativePin ? ' and authorization PIN' : ''}.`,
         timestamp: new Date().toISOString(),
       });
 

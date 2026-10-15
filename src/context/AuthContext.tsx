@@ -1,9 +1,10 @@
 import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
 import { User, onAuthStateChanged } from 'firebase/auth';
 import { auth } from '@/services/firebase';
-import { UserProfile, UserRole } from '@/types';
+import { UserProfile, UserRole, CompanyProfile } from '@/types';
 import {
   fetchUserProfile,
+  fetchCompanyProfile,
   loginWithEmail,
   logout as authLogout,
 } from '@/services/authService';
@@ -16,6 +17,9 @@ interface AuthContextType {
   role: UserRole | null;
   isAdmin: boolean;
   isEmployee: boolean;
+  companyId: string;
+  companyName: string;
+  company: CompanyProfile | null;
   isLoading: boolean;
   selectedMonthKey: string;
   setSelectedMonthKey: (monthKey: string) => void;
@@ -29,8 +33,18 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [firebaseUser, setFirebaseUser] = useState<User | null>(null);
   const [user, setUser] = useState<UserProfile | null>(null);
+  const [company, setCompany] = useState<CompanyProfile | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [selectedMonthKey, setSelectedMonthKey] = useState<string>(getCurrentMonthKey());
+
+  const loadCompanyDetails = async (cId: string) => {
+    try {
+      const comp = await fetchCompanyProfile(cId);
+      setCompany(comp);
+    } catch {
+      setCompany(null);
+    }
+  };
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (fbUser) => {
@@ -39,14 +53,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         try {
           const profile = await fetchUserProfile(fbUser.uid);
           setUser(profile);
+          if (profile?.companyId) {
+            await loadCompanyDetails(profile.companyId);
+          }
           // Register push notifications (silently handles Expo Go vs native builds)
           registerForPushNotificationsAsync(fbUser.uid).catch(() => {});
         } catch (err) {
           console.error('[AuthContext] Error loading user profile:', err);
           setUser(null);
+          setCompany(null);
         }
       } else {
         setUser(null);
+        setCompany(null);
       }
       setIsLoading(false);
     });
@@ -59,6 +78,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     try {
       const profile = await loginWithEmail(email, pass);
       setUser(profile);
+      if (profile.companyId) {
+        await loadCompanyDetails(profile.companyId);
+      }
       return profile;
     } finally {
       setIsLoading(false);
@@ -71,6 +93,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       await authLogout();
       setUser(null);
       setFirebaseUser(null);
+      setCompany(null);
     } finally {
       setIsLoading(false);
     }
@@ -80,12 +103,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (firebaseUser) {
       const p = await fetchUserProfile(firebaseUser.uid);
       setUser(p);
+      if (p?.companyId) {
+        await loadCompanyDetails(p.companyId);
+      }
     }
   };
 
   const role = user?.role || null;
   const isAdmin = role === 'admin';
   const isEmployee = role === 'employee';
+  const companyId = user?.companyId || 'company_vivexa';
+  const companyName = company?.name || user?.companyName || 'Vivexa Technologies';
 
   return (
     <AuthContext.Provider
@@ -95,6 +123,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         role,
         isAdmin,
         isEmployee,
+        companyId,
+        companyName,
+        company,
         isLoading,
         selectedMonthKey,
         setSelectedMonthKey,

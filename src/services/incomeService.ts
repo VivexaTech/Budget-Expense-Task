@@ -28,11 +28,13 @@ export async function submitIncomeEntry(
   },
   user: UserProfile
 ): Promise<IncomeEntry> {
+  const companyId = user.companyId || 'company_vivexa';
   const newRef = doc(collection(db, 'incomeEntries'));
   const now = new Date().toISOString();
 
   const entry: IncomeEntry = {
     id: newRef.id,
+    companyId,
     employeeId: user.employeeId,
     employeeUid: user.uid,
     employeeNameSnapshot: user.displayName,
@@ -47,10 +49,11 @@ export async function submitIncomeEntry(
   };
 
   await setDoc(newRef, entry);
+  await setDoc(doc(db, 'companies', companyId, 'incomeEntries', entry.id), entry);
 
   // Record audit log
-  await setDoc(doc(collection(db, 'activityLogs')), {
-    id: doc(collection(db, 'activityLogs')).id,
+  const auditData = {
+    companyId,
     actorUid: user.uid,
     actorName: user.displayName,
     actorRole: user.role,
@@ -65,7 +68,9 @@ export async function submitIncomeEntry(
       monthKey: entry.monthKey,
     },
     timestamp: now,
-  });
+  };
+  await setDoc(doc(collection(db, 'companies', companyId, 'activityLogs')), auditData);
+  await setDoc(doc(collection(db, 'activityLogs')), auditData);
 
   // Recalculate task eligibility immediately in Firestore so newly funded tasks become READY_TO_COMPLETE
   await recalculateTaskEligibility(data.monthKey);
@@ -132,7 +137,8 @@ export async function voidIncomeEntry(
  */
 export function subscribeToMonthIncome(
   monthKey: string,
-  callback: (entries: IncomeEntry[]) => void
+  callback: (entries: IncomeEntry[]) => void,
+  companyId = 'company_vivexa'
 ) {
   const q = query(
     collection(db, 'incomeEntries'),
@@ -144,7 +150,13 @@ export function subscribeToMonthIncome(
     q,
     (snapshot) => {
       const list: IncomeEntry[] = [];
-      snapshot.forEach((d) => list.push(d.data() as IncomeEntry));
+      snapshot.forEach((d) => {
+        const item = d.data() as IncomeEntry;
+        const itemCompany = item.companyId || 'company_vivexa';
+        if (itemCompany === companyId) {
+          list.push(item);
+        }
+      });
       callback(list);
     },
     (err) => {

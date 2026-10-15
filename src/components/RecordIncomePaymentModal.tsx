@@ -127,8 +127,8 @@ export const RecordIncomePaymentModal: React.FC<RecordIncomePaymentModalProps> =
                 {
                   amount: enteredAmount,
                   paymentMode,
-                  notes,
-                  nextDueDate: isPartial ? nextDueDate : undefined,
+                  notes: notes?.trim() || '',
+                  ...(isPartial && nextDueDate ? { nextDueDate } : {}),
                 },
                 user,
                 selectedMonthKey

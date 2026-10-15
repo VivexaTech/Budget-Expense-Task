@@ -51,6 +51,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     interface RawTask {
       id: string;
+      companyId: string;
       clientName: string;
       expectedAmount: number;
       remainingAmount: number;
@@ -64,6 +65,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const d = doc.data();
       allActiveTasks.push({
         id: doc.id,
+        companyId: d.companyId || 'company_vivexa',
         clientName: d.clientName || 'Client',
         expectedAmount: Number(d.expectedAmount || 0),
         remainingAmount: Number(d.remainingAmount || 0),
@@ -88,12 +90,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const uid = userDoc.id;
       const role = u.role || 'employee';
       const pushToken = u.pushToken;
+      const userCompany = u.companyId || 'company_vivexa';
 
-      // Filter tasks relevant to this user:
-      // Admin sees company-wide active tasks; Employee sees tasks they created or were assigned
+      // Strictly isolate tasks to the user's specific company workspace
+      const companyTasks = allActiveTasks.filter((t) => t.companyId === userCompany);
+
+      // Admin sees their company's tasks; Employee sees tasks they created or were assigned within their company
       const userTasks = role === 'admin'
-        ? allActiveTasks
-        : allActiveTasks.filter((t) => t.createdByUid === uid || t.assignedToUid === uid);
+        ? companyTasks
+        : companyTasks.filter((t) => t.createdByUid === uid || t.assignedToUid === uid);
 
       // Calculate Metrics for user
       let amountDueToday = 0;

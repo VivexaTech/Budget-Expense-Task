@@ -23,6 +23,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const firestore = admin.firestore();
     const callerDoc = await firestore.collection('users').doc(authUser.uid).get();
     const callerRole = callerDoc.data()?.role;
+    const companyId = authUser.companyId || callerDoc.data()?.companyId || 'company_vivexa';
+    const companyName = authUser.companyName || callerDoc.data()?.companyName || 'Vivexa Technologies';
 
     if (callerRole !== 'admin') {
       return res.status(403).json({ error: 'Forbidden. Admin privileges required.' });
@@ -36,13 +38,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     const assignedRole = role === 'admin' ? 'admin' : 'employee';
 
-    // Check if employeeId is unique
-    const existingEmp = await firestore.collection('users').where('employeeId', '==', employeeId).get();
+    // Check if employeeId is unique within this company
+    const existingEmp = await firestore
+      .collection('companies')
+      .doc(companyId)
+      .collection('members')
+      .where('employeeId', '==', employeeId)
+      .get();
     if (!existingEmp.empty) {
-      return res.status(400).json({ error: `Employee ID ${employeeId} already exists.` });
+      return res.status(400).json({ error: `Employee ID ${employeeId} already exists in your company.` });
     }
 
-    // 1. Create Firebase Auth user using Admin SDK (preserves caller session!)
+    // 1. Create Firebase Auth user using Admin SDK
     const userRecord = await admin.auth().createUser({
       email,
       password,
@@ -50,15 +57,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       emailVerified: true,
     });
 
-    // 2. Set Custom User Claims
+    // 2. Set Custom User Claims with companyId
     await admin.auth().setCustomUserClaims(userRecord.uid, {
       role: assignedRole,
       employeeId,
+      companyId,
+      companyName,
     });
 
     const now = new Date().toISOString();
 
-    // 3. Save profile in Firestore
+    // 3. Save profile in global users and company members
     const userProfile = {
       uid: userRecord.uid,
       employeeId,
@@ -66,14 +75,33 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       email,
       role: assignedRole,
       active: true,
+      companyId,
+      companyName,
       createdAt: now,
       updatedAt: now,
     };
 
-    await firestore.collection('users').doc(userRecord.uid).set(userProfile);
+    const batch = firestore.batch();
+    batch.set(firestore.collection('users').doc(userRecord.uid), userProfile);
+    batch.set(
+      firestore.collection('companies').doc(companyId).collection('members').doc(userRecord.uid),
+      {
+        userId: userRecord.uid,
+        companyId,
+        role: assignedRole,
+        employeeId,
+        displayName,
+        email,
+        active: true,
+        joinedAt: now,
+      }
+    );
 
-    // 4. Record Audit Log
-    await firestore.collection('activityLogs').add({
+    // 4. Record Audit Log in company scope
+    const auditRef = firestore.collection('companies').doc(companyId).collection('activityLogs').doc();
+    batch.set(auditRef, {
+      id: auditRef.id,
+      companyId,
       actorUid: authUser.uid,
       actorName: callerDoc.data()?.displayName || 'Admin',
       actorRole: 'admin',
@@ -81,9 +109,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       entityType: 'user',
       entityId: userRecord.uid,
       description: `Created new ${assignedRole} account for ${displayName} (${employeeId})`,
-      metadata: { employeeId, email, role: assignedRole },
+      metadata: { employeeId, email, role: assignedRole, companyId },
       timestamp: now,
     });
+
+    await batch.commit();
 
     return res.status(201).json({
       success: true,

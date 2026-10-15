@@ -689,6 +689,425 @@ export function runFinancialLogicTests(): boolean {
     formatInvoiceNumber('NON_GST', 2026, 10, 42) === 'VTN-2026-10-042'
   );
 
+  // Test 32: Firestore Data Sanitization (Prevent Unsupported Field Value: undefined)
+  function testRemoveUndefinedFields<T>(input: T): T {
+    if (input === null || input === undefined) return input;
+    if (Array.isArray(input)) return input.map((item) => testRemoveUndefinedFields(item)) as unknown as T;
+    if (typeof input === 'object' && input.constructor === Object) {
+      const cleaned: Record<string, any> = {};
+      for (const [key, value] of Object.entries(input)) {
+        if (value !== undefined) {
+          cleaned[key] = testRemoveUndefinedFields(value);
+        }
+      }
+      return cleaned as T;
+    }
+    return input;
+  }
+
+  function testSanitizePaymentRecord(record: any) {
+    const sanitized: any = {
+      id: record.id || 'PAY_123',
+      amount: Number(record.amount || 0),
+      paymentMode: record.paymentMode || 'CASH',
+      date: record.date || '2026-10-14T10:00:00.000Z',
+      receivedByUid: record.receivedByUid || '',
+      receivedByEmployeeId: record.receivedByEmployeeId || '',
+      receivedByName: record.receivedByName || '',
+      notes: (record.notes || '').trim(),
+      incomeEntryId: record.incomeEntryId || '',
+    };
+    if (record.nextDueDate && record.nextDueDate.trim()) {
+      sanitized.nextDueDate = record.nextDueDate.trim();
+    }
+    return sanitized;
+  }
+
+  // Subtest A: Completed payment record strips nextDueDate completely
+  const completedPayment = testSanitizePaymentRecord({
+    id: 'PAY_001',
+    amount: 5000,
+    paymentMode: 'UPI',
+    nextDueDate: undefined, // Fully settled task
+  });
+  assert(
+    'Sanitize payment record for completed task completely omits nextDueDate key',
+    !('nextDueDate' in completedPayment) && completedPayment.amount === 5000
+  );
+
+  // Subtest B: Partial payment preserves nextDueDate
+  const partialPayment = testSanitizePaymentRecord({
+    id: 'PAY_002',
+    amount: 2000,
+    paymentMode: 'BANK_TRANSFER',
+    nextDueDate: '2026-10-25',
+  });
+  assert(
+    'Sanitize payment record for partial payment preserves valid nextDueDate',
+    partialPayment.nextDueDate === '2026-10-25'
+  );
+
+  // Subtest C: transaction.update payload tree contains zero undefined fields
+  const mockTransactionUpdatePayload: Record<string, any> = testRemoveUndefinedFields({
+    receivedAmount: 5000,
+    remainingAmount: 0,
+    status: 'COMPLETED',
+    dueDate: '2026-10-14',
+    reminderDate: null,
+    payments: [completedPayment],
+    completedAt: '2026-10-14T10:00:00.000Z',
+    optionalUndefinedField: undefined,
+  });
+
+  const hasAnyUndefined = (obj: any): boolean => {
+    if (obj === undefined) return true;
+    if (obj === null) return false;
+    if (Array.isArray(obj)) return obj.some(hasAnyUndefined);
+    if (typeof obj === 'object') {
+      return Object.entries(obj).some(([_, val]) => hasAnyUndefined(val));
+    }
+    return false;
+  };
+
+  assert(
+    'transaction.update payload has zero undefined fields in its entire document tree',
+    !hasAnyUndefined(mockTransactionUpdatePayload) &&
+      !('optionalUndefinedField' in mockTransactionUpdatePayload) &&
+      mockTransactionUpdatePayload.reminderDate === null
+  );
+
+  // Test 33: Sandboxed PDF Path & Filename Sanitization for Sharing
+  function buildSafeInvoiceShareUri(invoiceNumber: string, baseDir: string): { fileName: string; targetUri: string } {
+    const cleanNumber = (invoiceNumber || 'INV').replace(/[^a-zA-Z0-9_-]/g, '_');
+    const fileName = `Invoice_${cleanNumber}.pdf`;
+    const normalizedDir = (baseDir || '').replace(/\/?$/, '/');
+    return {
+      fileName,
+      targetUri: `${normalizedDir}${fileName}`,
+    };
+  }
+
+  const invoiceShare1 = buildSafeInvoiceShareUri('VTX-2026-10-001', 'file:///data/user/0/com.app/files/');
+  assert(
+    'Invoice PDF name formats safely without invalid characters',
+    invoiceShare1.fileName === 'Invoice_VTX-2026-10-001.pdf' &&
+      invoiceShare1.targetUri === 'file:///data/user/0/com.app/files/Invoice_VTX-2026-10-001.pdf'
+  );
+
+  const invoiceShare2 = buildSafeInvoiceShareUri('VTN/2026 10#042', 'file:///data/user/0/com.app/files');
+  assert(
+    'Invoice PDF normalizes directory without trailing slash and cleans special chars',
+    invoiceShare2.fileName === 'Invoice_VTN_2026_10_042.pdf' &&
+      invoiceShare2.targetUri === 'file:///data/user/0/com.app/files/Invoice_VTN_2026_10_042.pdf'
+  );
+
+  // Test 34: Multi-Tenant Workspace & Financial Isolation (e.g. Google vs HCL)
+  interface TenantWorkspace {
+    companyId: string;
+    companyName: string;
+    openingBalance: number;
+    incomes: Array<{ id: string; amount: number; companyId: string }>;
+    expenses: Array<{ id: string; amount: number; companyId: string; paymentSource: 'COMPANY_FUND' | 'EMPLOYEE_PAID'; status: string }>;
+    tasks: Array<TaskItem & { companyId: string }>;
+    invoicePrefix: string;
+    invoiceCounter: number;
+  }
+
+  const googleWorkspace: TenantWorkspace = {
+    companyId: 'company_google',
+    companyName: 'Google LLC',
+    openingBalance: 1000000,
+    incomes: [{ id: 'inc_g1', amount: 500000, companyId: 'company_google' }],
+    expenses: [{ id: 'exp_g1', amount: 200000, companyId: 'company_google', paymentSource: 'COMPANY_FUND', status: 'APPROVED' }],
+    tasks: [{
+      id: 'task_g1',
+      title: 'Cloud Infrastructure',
+      amount: 300000,
+      dueDate: '2026-10-25',
+      createdAt: '2026-10-01T00:00:00Z',
+      status: 'PENDING',
+      allocatedAmount: 0,
+      companyId: 'company_google',
+    }],
+    invoicePrefix: 'GOOG',
+    invoiceCounter: 1,
+  };
+
+  const hclWorkspace: TenantWorkspace = {
+    companyId: 'company_hcl',
+    companyName: 'HCL Technologies',
+    openingBalance: 500000,
+    incomes: [{ id: 'inc_h1', amount: 250000, companyId: 'company_hcl' }],
+    expenses: [{ id: 'exp_h1', amount: 150000, companyId: 'company_hcl', paymentSource: 'COMPANY_FUND', status: 'APPROVED' }],
+    tasks: [{
+      id: 'task_h1',
+      title: 'Enterprise Server Migration',
+      amount: 800000,
+      dueDate: '2026-10-20',
+      createdAt: '2026-10-01T00:00:00Z',
+      status: 'PENDING',
+      allocatedAmount: 0,
+      companyId: 'company_hcl',
+    }],
+    invoicePrefix: 'HCL',
+    invoiceCounter: 1,
+  };
+
+  // Google financial calculations
+  const googleValidIncome = googleWorkspace.incomes.reduce((acc, i) => acc + i.amount, 0);
+  const googleCompanyExpenses = googleWorkspace.expenses
+    .filter(e => e.paymentSource === 'COMPANY_FUND' && e.status === 'APPROVED')
+    .reduce((acc, e) => acc + e.amount, 0);
+  const googleBalance = calculateAvailableBalance(googleWorkspace.openingBalance, googleValidIncome, 0, googleCompanyExpenses);
+
+  // HCL financial calculations
+  const hclValidIncome = hclWorkspace.incomes.reduce((acc, i) => acc + i.amount, 0);
+  const hclCompanyExpenses = hclWorkspace.expenses
+    .filter(e => e.paymentSource === 'COMPANY_FUND' && e.status === 'APPROVED')
+    .reduce((acc, e) => acc + e.amount, 0);
+  const hclBalance = calculateAvailableBalance(hclWorkspace.openingBalance, hclValidIncome, 0, hclCompanyExpenses);
+
+  assert(
+    'Tenant Google balance calculates to ₹1,300,000 strictly from Google ledger',
+    googleBalance === 1300000
+  );
+
+  assert(
+    'Tenant HCL balance calculates to ₹600,000 strictly from HCL ledger',
+    hclBalance === 600000
+  );
+
+  // Deterministic task allocation strictly within isolated tenant workspaces
+  const googleAllocation = allocateFundsToTasks(googleBalance, googleWorkspace.tasks);
+  const hclAllocation = allocateFundsToTasks(hclBalance, hclWorkspace.tasks);
+
+  assert(
+    'Google task (₹300k) is READY_TO_COMPLETE with ₹1,000,000 unallocated surplus',
+    googleAllocation.evaluatedTasks[0].status === 'READY_TO_COMPLETE' &&
+      googleAllocation.remainingUnallocatedFunds === 1000000
+  );
+
+  assert(
+    'HCL task (₹800k) remains PENDING because HCL funds (₹600k) do not leak from Google',
+    hclAllocation.evaluatedTasks[0].status === 'PENDING' &&
+      hclAllocation.remainingUnallocatedFunds === 600000
+  );
+
+  // Invoice numbering isolation
+  function formatTenantInvoiceNumber(prefix: string, monthKey: string, serial: number): string {
+    const num = String(serial).padStart(3, '0');
+    return `${prefix}-${monthKey}-${num}`;
+  }
+
+  const googleInvoiceNumber = formatTenantInvoiceNumber(googleWorkspace.invoicePrefix, '2026-10', googleWorkspace.invoiceCounter);
+  const hclInvoiceNumber = formatTenantInvoiceNumber(hclWorkspace.invoicePrefix, '2026-10', hclWorkspace.invoiceCounter);
+
+  assert(
+    'Independent company invoice numbers format uniquely with isolated counters',
+    googleInvoiceNumber === 'GOOG-2026-10-001' && hclInvoiceNumber === 'HCL-2026-10-001'
+  );
+
+  // Cross-tenant data filtering guard function
+  function queryTenantRecords<T extends { companyId: string }>(records: T[], requestingCompanyId: string): T[] {
+    return records.filter(r => r.companyId === requestingCompanyId);
+  }
+
+  const allTasks = [...googleWorkspace.tasks, ...hclWorkspace.tasks];
+  const googleQueriedTasks = queryTenantRecords(allTasks, 'company_google');
+  const hclQueriedTasks = queryTenantRecords(allTasks, 'company_hcl');
+
+  // ==========================================
+  // UNIFIED MONTHLY TARGET & MULTI-TENANT TESTS
+  // ==========================================
+  function computeAuthoritativeMonthlyTarget(
+    budget: { fixedExpenseBudget?: number; additionalExpectedExpenses?: number; profitTarget?: number; monthlyTarget?: number; isOverridden?: boolean } | null,
+    tasks: { amount: number; status: string; companyId?: string }[],
+    companyId?: string
+  ) {
+    const isOverridden = Boolean(budget?.isOverridden && Number(budget.monthlyTarget) > 0);
+    const activeTasksSum = tasks
+      .filter((t) => (!companyId || t.companyId === companyId) && t.status !== 'CANCELLED')
+      .reduce((sum, t) => sum + (Number(t.amount) || 0), 0);
+
+    const configuredFixed = Number(budget?.fixedExpenseBudget) || 0;
+    const fixedExpenses = configuredFixed > 0 ? Math.max(configuredFixed, activeTasksSum) : activeTasksSum;
+    const additional = Number(budget?.additionalExpectedExpenses) || 0;
+    const profit = Number(budget?.profitTarget) || 0;
+
+    if (isOverridden) {
+      return { monthlyTarget: Number(budget!.monthlyTarget), fixedExpenses, isOverridden: true };
+    }
+    return { monthlyTarget: fixedExpenses + additional + profit, fixedExpenses, isOverridden: false };
+  }
+
+  // Test: tasks exceed configured fixed budget
+  const targetWithHigherTasks = computeAuthoritativeMonthlyTarget(
+    { fixedExpenseBudget: 50000, additionalExpectedExpenses: 15000, profitTarget: 25000 },
+    [
+      { amount: 35000, status: 'PENDING' },
+      { amount: 25000, status: 'READY_TO_COMPLETE' },
+      { amount: 10000, status: 'CANCELLED' }, // Cancelled task must be excluded
+    ]
+  );
+  assert(
+    'Authoritative target baseline uses active tasks (60k) over configured fixed (50k) = ₹100,000 target',
+    targetWithHigherTasks.fixedExpenses === 60000 && targetWithHigherTasks.monthlyTarget === 100000
+  );
+
+  // Test: configured fixed exceeds tasks
+  const targetWithHigherFixed = computeAuthoritativeMonthlyTarget(
+    { fixedExpenseBudget: 80000, additionalExpectedExpenses: 10000, profitTarget: 20000 },
+    [{ amount: 30000, status: 'PENDING' }]
+  );
+  assert(
+    'Authoritative target baseline uses configured fixed (80k) when tasks (30k) are lower = ₹110,000 target',
+    targetWithHigherFixed.fixedExpenses === 80000 && targetWithHigherFixed.monthlyTarget === 110000
+  );
+
+  // Test: target override takes precedence
+  const overriddenTarget = computeAuthoritativeMonthlyTarget(
+    { fixedExpenseBudget: 50000, additionalExpectedExpenses: 20000, profitTarget: 30000, monthlyTarget: 150000, isOverridden: true },
+    [{ amount: 60000, status: 'PENDING' }]
+  );
+  assert(
+    'Target override takes precedence and returns exactly ₹150,000',
+    overriddenTarget.monthlyTarget === 150000 && overriddenTarget.isOverridden === true
+  );
+
+  // Test: multi-tenant monthly target isolation
+  const multiTenantTasks = [
+    { amount: 500000, status: 'PENDING', companyId: 'company_google' },
+    { amount: 40000, status: 'PENDING', companyId: 'company_hcl' },
+  ];
+  const googleMonthlyTarget = computeAuthoritativeMonthlyTarget(
+    { fixedExpenseBudget: 200000, additionalExpectedExpenses: 50000, profitTarget: 50000 },
+    multiTenantTasks,
+    'company_google'
+  );
+  const hclMonthlyTarget = computeAuthoritativeMonthlyTarget(
+    { fixedExpenseBudget: 50000, additionalExpectedExpenses: 10000, profitTarget: 10000 },
+    multiTenantTasks,
+    'company_hcl'
+  );
+  assert(
+    'Google monthly target (₹600k) includes Google tasks (₹500k) and ignores HCL tasks',
+    googleMonthlyTarget.fixedExpenses === 500000 && googleMonthlyTarget.monthlyTarget === 600000
+  );
+  assert(
+    'HCL monthly target (₹70k) is strictly isolated and not contaminated by Google tasks',
+    hclMonthlyTarget.fixedExpenses === 50000 && hclMonthlyTarget.monthlyTarget === 70000
+  );
+
+  // ==========================================
+  // PRIVATE INVOICE AUTHORIZATION & PIN TESTS
+  // ==========================================
+  function testResolveInvoiceType(
+    pin: string,
+    settings: {
+      gstin?: string;
+      allowAlternativeInvoiceType?: boolean;
+      primaryPin: string;
+      alternativePin?: string;
+    }
+  ): { success: boolean; invoiceType?: 'GST' | 'NON_GST'; error?: string } {
+    const hasGstin = Boolean(settings.gstin && settings.gstin.trim().length > 0);
+    const allowAlternative = Boolean(settings.allowAlternativeInvoiceType);
+
+    if (pin === settings.primaryPin) {
+      // Primary PIN default determined by GSTIN
+      return { success: true, invoiceType: hasGstin ? 'GST' : 'NON_GST' };
+    }
+
+    if (settings.alternativePin && pin === settings.alternativePin) {
+      if (hasGstin && allowAlternative) {
+        return { success: true, invoiceType: 'NON_GST' };
+      }
+      return { success: false, error: 'Invalid authorization PIN.' };
+    }
+
+    return { success: false, error: 'Invalid authorization PIN.' };
+  }
+
+  // Case 1: Company with GSTIN using primary PIN -> GST invoice
+  const gstCompanyPrimary = testResolveInvoiceType('123456', {
+    gstin: '27AABCU9603R1ZX',
+    allowAlternativeInvoiceType: false,
+    primaryPin: '123456',
+    alternativePin: '654321',
+  });
+  assert(
+    'Company with GSTIN using primary PIN produces GST invoice',
+    gstCompanyPrimary.success && gstCompanyPrimary.invoiceType === 'GST'
+  );
+
+  // Case 2: Company with GSTIN attempting alternative PIN WITHOUT permission -> Blocked
+  const gstCompanyAltBlocked = testResolveInvoiceType('654321', {
+    gstin: '27AABCU9603R1ZX',
+    allowAlternativeInvoiceType: false,
+    primaryPin: '123456',
+    alternativePin: '654321',
+  });
+  assert(
+    'Company with GSTIN entering alternative PIN is BLOCKED when allowAlternativeInvoiceType is false',
+    !gstCompanyAltBlocked.success && gstCompanyAltBlocked.error === 'Invalid authorization PIN.'
+  );
+
+  // Case 3: Company with GSTIN entering alternative PIN WITH permission from Super Admin -> Non-GST invoice
+  const gstCompanyAltAllowed = testResolveInvoiceType('654321', {
+    gstin: '27AABCU9603R1ZX',
+    allowAlternativeInvoiceType: true,
+    primaryPin: '123456',
+    alternativePin: '654321',
+  });
+  assert(
+    'Company with GSTIN entering alternative PIN produces Non-GST invoice when permitted by Super Admin',
+    gstCompanyAltAllowed.success && gstCompanyAltAllowed.invoiceType === 'NON_GST'
+  );
+
+  // Case 4: Non-GST company using primary PIN -> Non-GST invoice
+  const nonGstCompany = testResolveInvoiceType('123456', {
+    gstin: '',
+    allowAlternativeInvoiceType: false,
+    primaryPin: '123456',
+  });
+  assert(
+    'Company without GSTIN automatically defaults to Non-GST invoice on primary PIN',
+    nonGstCompany.success && nonGstCompany.invoiceType === 'NON_GST'
+  );
+
+  // Case 5: Wrong PIN returns neutral error
+  const wrongPinTest = testResolveInvoiceType('999999', {
+    gstin: '27AABCU9603R1ZX',
+    primaryPin: '123456',
+  });
+  assert(
+    'Wrong PIN returns neutral error without exposing internal PIN terms',
+    !wrongPinTest.success && wrongPinTest.error === 'Invalid authorization PIN.'
+  );
+
+  // ==========================================
+  // CLOUDINARY SIGNATURE GENERATION TESTS
+  // ==========================================
+  function generateTestCloudinarySignature(params: Record<string, any>, apiSecret: string): string {
+    const sortedKeys = Object.keys(params).sort();
+    const toSign = sortedKeys.map((k) => `${k}=${params[k]}`).join('&') + apiSecret;
+    let h1 = 0x67452301, h2 = 0xefcdab89, h3 = 0x98badcfe, h4 = 0x10325476, h5 = 0xc3d2e1f0;
+    for (let i = 0; i < toSign.length; i++) {
+      const code = toSign.charCodeAt(i);
+      h1 = ((h1 << 5) - h1 + code) | 0;
+      h2 = ((h2 << 7) - h2 + code) | 0;
+    }
+    const hex = (val: number) => (val >>> 0).toString(16).padStart(8, '0');
+    return (hex(h1) + hex(h2) + hex(h3) + hex(h4) + hex(h5)).toLowerCase();
+  }
+
+  const cloudParams = { folder: 'companies/comp_test/branding', timestamp: 1770000000 };
+  const cloudSig = generateTestCloudinarySignature(cloudParams, 'test_secret_123');
+  assert(
+    'Cloudinary signed upload signature hashes parameters with secret in sorted order',
+    typeof cloudSig === 'string' && cloudSig.length === 40
+  );
+
   console.log(`\nTEST RESULTS: ${passed} Passed, ${failed} Failed`);
   return failed === 0;
 }

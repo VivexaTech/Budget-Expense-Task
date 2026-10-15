@@ -70,9 +70,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         const dayStr = dayOfMonth.toString().padStart(2, '0');
         const dueDate = `${targetMonthKey}-${dayStr}`;
 
-        const newTaskRef = firestore.collection('tasks').doc();
-        await newTaskRef.set({
+        const templateCompanyId = template.companyId || 'company_vivexa';
+        const newTaskRef = firestore.collection('companies').doc(templateCompanyId).collection('tasks').doc();
+        const rootTaskRef = firestore.collection('tasks').doc(newTaskRef.id);
+        const taskData = {
           id: newTaskRef.id,
+          companyId: templateCompanyId,
           title: template.title,
           amount: Number(template.amount),
           description: template.description || 'Monthly recurring company expense',
@@ -86,10 +89,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           createdBy: 'SYSTEM_CRON',
           createdAt: now,
           updatedAt: now,
-        });
+        };
 
-        // Log audit event
-        await firestore.collection('activityLogs').add({
+        await newTaskRef.set(taskData);
+        await rootTaskRef.set(taskData);
+
+        // Log audit event to company and root
+        const auditData = {
+          companyId: templateCompanyId,
           actorUid: 'SYSTEM_CRON',
           actorName: 'Recurring Tasks Engine',
           actorRole: 'system',
@@ -99,7 +106,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           description: `Generated recurring monthly task: ${template.title} for ${targetMonthKey}`,
           metadata: { templateId: doc.id, monthKey: targetMonthKey, dueDate, amount: template.amount },
           timestamp: now,
-        });
+        };
+        await firestore.collection('companies').doc(templateCompanyId).collection('activityLogs').add(auditData);
+        await firestore.collection('activityLogs').add(auditData);
 
         createdCount++;
       }

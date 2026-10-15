@@ -205,7 +205,7 @@ export default function ProfileScreen() {
                 <View style={styles.menuItemContent}>
                   <Text style={styles.menuItemTitle}>Invoice & Tax Configuration</Text>
                   <Text style={styles.menuItemSubtitle}>
-                    Configure supplier identity, GSTIN, and dual GPIN/NPIN authorization
+                    Configure supplier identity, GSTIN, branding, and invoice authorization PIN
                   </Text>
                 </View>
                 <ChevronRight size={18} color={COLORS.textTertiary} />

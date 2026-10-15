@@ -3,10 +3,32 @@ import * as admin from 'firebase-admin';
 import * as crypto from 'crypto';
 import { getFirebaseAdmin, verifyAuthToken } from './_firebaseAdmin';
 import { normalizeStateName, isSameStateSupply } from '../src/constants/states';
-import { Invoice, InvoiceType, ClientBillingSnapshot, SupplierBusinessSnapshot } from '../src/types';
+import {
+  Invoice,
+  InvoiceType,
+  ClientBillingSnapshot,
+  SupplierBusinessSnapshot,
+  InvoiceTemplateId,
+  DEFAULT_INVOICE_TEMPLATES,
+} from '../src/types';
 
 function hashPin(pin: string, salt: string): string {
   return crypto.createHmac('sha256', salt).update(pin.trim()).digest('hex');
+}
+
+function cleanFirestoreData<T>(input: T): T {
+  if (input === null || input === undefined) return input;
+  if (Array.isArray(input)) return input.map(cleanFirestoreData) as unknown as T;
+  if (typeof input === 'object' && input.constructor === Object) {
+    const cleaned: Record<string, any> = {};
+    for (const [key, value] of Object.entries(input)) {
+      if (value !== undefined) {
+        cleaned[key] = cleanFirestoreData(value);
+      }
+    }
+    return cleaned as T;
+  }
+  return input;
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -37,6 +59,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     const firestore = admin.firestore();
     const cleanPin = String(pin).trim();
+    const companyId = authUser.companyId || 'company_vivexa';
 
     // 1. Check Rate Limiting for caller
     const rateLimitRef = firestore.collection('systemConfig').doc(`pinLimit_${authUser.uid}`);
@@ -54,25 +77,46 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
     }
 
-    // 2. Fetch Invoice Settings and verify PIN
-    const settingsRef = firestore.collection('systemConfig').doc('invoiceSettings');
-    const settingsSnap = await settingsRef.get();
+    // 2. Fetch Invoice Settings and verify PIN (Company scoped with legacy fallback)
+    const companySettingsRef = firestore.collection('companies').doc(companyId).collection('settings').doc('general');
+    const legacySettingsRef = firestore.collection('systemConfig').doc('invoiceSettings');
+    let settingsSnap = await companySettingsRef.get();
+    if (!settingsSnap.exists) {
+      settingsSnap = await legacySettingsRef.get();
+    }
     const settings = settingsSnap.data() || {};
     const pinSalt = settings.pinSalt || 'default_salt_vivexa';
 
+    const hasGstin = Boolean(settings.gstin && String(settings.gstin).trim().length > 0);
+    const allowAlternative = Boolean(settings.allowAlternativeInvoiceType);
+
     let matchedType: InvoiceType | null = null;
 
-    if (settings.gpinHash && hashPin(cleanPin, pinSalt) === settings.gpinHash) {
-      matchedType = 'GST';
-    } else if (settings.npinHash && hashPin(cleanPin, pinSalt) === settings.npinHash) {
-      matchedType = 'NON_GST';
-    } else if (!settings.gpinHash && !settings.npinHash) {
-      // Default initial fallback PINs before first admin configuration:
-      // GPIN: '111111', NPIN: '222222'
-      if (cleanPin === '111111') {
-        matchedType = 'GST';
-      } else if (cleanPin === '222222') {
-        matchedType = 'NON_GST';
+    // Resolve primary PIN hash (GST if has GSTIN, else Non-GST)
+    const primaryHash = settings.primaryPinHash || (hasGstin ? settings.gpinHash : settings.npinHash);
+    const isPrimaryMatch = primaryHash
+      ? hashPin(cleanPin, pinSalt) === primaryHash
+      : (cleanPin === '111111');
+
+    // Resolve alternative PIN hash
+    const alternativeHash = settings.alternativePinHash || (hasGstin ? settings.npinHash : settings.gpinHash);
+    const isAlternativeMatch = alternativeHash
+      ? hashPin(cleanPin, pinSalt) === alternativeHash
+      : (cleanPin === '222222');
+
+    if (isPrimaryMatch) {
+      // Primary PIN: Default invoice type determined by GSTIN configuration
+      matchedType = hasGstin ? 'GST' : 'NON_GST';
+    } else if (isAlternativeMatch) {
+      if (hasGstin) {
+        // Company has GSTIN: can generate alternative Non-GST invoice ONLY if Super Admin granted permission
+        if (allowAlternative) {
+          matchedType = 'NON_GST';
+        } else {
+          matchedType = null;
+        }
+      } else {
+        matchedType = null;
       }
     }
 
@@ -97,9 +141,21 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // Reset rate limits on success
     await rateLimitRef.delete().catch(() => {});
 
-    // 3. Inspect Income Task
-    const taskRef = firestore.collection('incomeTasks').doc(taskId);
-    const taskSnap = await taskRef.get();
+    // 3. Inspect Income Task (Check company scoped subcollection, then fallback to root)
+    const companyTaskRef = firestore.collection('companies').doc(companyId).collection('incomeTasks').doc(taskId);
+    let taskSnap = await companyTaskRef.get();
+    let effectiveTaskRef = companyTaskRef;
+    let isRootTask = false;
+
+    if (!taskSnap.exists) {
+      const rootTaskRef = firestore.collection('incomeTasks').doc(taskId);
+      taskSnap = await rootTaskRef.get();
+      if (taskSnap.exists) {
+        effectiveTaskRef = rootTaskRef;
+        isRootTask = true;
+      }
+    }
+
     if (!taskSnap.exists) {
       return res.status(404).json({ error: 'Income collection task not found.' });
     }
@@ -108,13 +164,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     // IDEMPOTENCY: Check if an invoice was already generated for this task
     if (task.invoiceId) {
-      const existingInvoiceSnap = await firestore.collection('invoices').doc(task.invoiceId).get();
-      if (existingInvoiceSnap.exists) {
+      const companyInvoiceSnap = await firestore.collection('companies').doc(companyId).collection('invoices').doc(task.invoiceId).get();
+      const rootInvoiceSnap = !companyInvoiceSnap.exists ? await firestore.collection('invoices').doc(task.invoiceId).get() : null;
+      const existingDoc = companyInvoiceSnap.exists ? companyInvoiceSnap : rootInvoiceSnap;
+      if (existingDoc && existingDoc.exists) {
         return res.status(200).json({
           success: true,
           alreadyExists: true,
           message: `Invoice ${task.invoiceNumber || ''} has already been generated.`,
-          invoice: existingInvoiceSnap.data(),
+          invoice: existingDoc.data(),
         });
       }
     }
@@ -126,7 +184,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       });
     }
 
-    // 4. Fetch Client details if available
+    // 4. Fetch Client details if available (Company subcollection, then fallback to root)
     let clientBillingSnapshot: ClientBillingSnapshot = {
       clientId: task.clientId || '',
       clientName: task.clientName || 'Valued Client',
@@ -135,7 +193,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     };
 
     if (task.clientId) {
-      const clientDoc = await firestore.collection('clients').doc(task.clientId).get();
+      let clientDoc = await firestore.collection('companies').doc(companyId).collection('clients').doc(task.clientId).get();
+      if (!clientDoc.exists) {
+        clientDoc = await firestore.collection('clients').doc(task.clientId).get();
+      }
       if (clientDoc.exists) {
         const c = clientDoc.data() || {};
         clientBillingSnapshot = {
@@ -154,18 +215,28 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
     }
 
+    const selectedTemplateId: InvoiceTemplateId = (settings.selectedTemplateId as InvoiceTemplateId) || 'CORPORATE';
+    const templateConfig = DEFAULT_INVOICE_TEMPLATES[selectedTemplateId] || DEFAULT_INVOICE_TEMPLATES.CORPORATE;
+
     const supplierBusinessSnapshot: SupplierBusinessSnapshot = {
-      businessName: settings.businessName || 'Vivexa Technologies',
+      businessName: settings.businessName || authUser.companyName || 'Vivexa Technologies',
       businessAddress: settings.businessAddress || 'Corporate Towers, Tech Park',
       city: settings.city || 'Mumbai',
       state: settings.state || 'Maharashtra',
       pincode: settings.pincode || '400001',
       gstin: settings.gstin || '',
       contactPhone: settings.contactPhone || '',
-      contactEmail: settings.contactEmail || '',
+      contactEmail: settings.contactEmail || authUser.email || '',
       logoUrl: settings.logoUrl || '',
-      paymentTerms: settings.paymentTerms || 'Payment due upon receipt.',
-      invoiceNotes: settings.invoiceNotes || 'Thank you for your business.',
+      signatureUrl: settings.signatureUrl || '',
+      bankDetails: settings.bankDetails || {
+        bankName: settings.bankName || '',
+        accountNumber: settings.accountNumber || '',
+        ifscCode: settings.ifscCode || '',
+        upiId: settings.upiId || '',
+      },
+      paymentTerms: settings.paymentTerms || templateConfig.paymentTerms || 'Payment due upon receipt.',
+      invoiceNotes: settings.invoiceNotes || templateConfig.invoiceNotes || 'Thank you for your business.',
     };
 
     // 5. Calculate Taxes & Amounts
@@ -206,28 +277,41 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const currentMonthKey = `${dateObj.getFullYear()}-${String(dateObj.getMonth() + 1).padStart(2, '0')}`;
     const prefix = matchedType === 'GST' ? 'VTX' : 'VTN';
     const counterDocId = `${prefix}_${currentMonthKey}`;
-    const counterRef = firestore.collection('invoiceCounters').doc(counterDocId);
-    const invoiceRef = firestore.collection('invoices').doc();
+    
+    // Scoped counter ref
+    const companyCounterRef = firestore.collection('companies').doc(companyId).collection('invoiceCounters').doc(counterDocId);
+    const legacyCounterRef = firestore.collection('invoiceCounters').doc(counterDocId);
+    
+    const newInvoiceId = firestore.collection('companies').doc(companyId).collection('invoices').doc().id;
+    const companyInvoiceRef = firestore.collection('companies').doc(companyId).collection('invoices').doc(newInvoiceId);
+    const rootInvoiceRef = firestore.collection('invoices').doc(newInvoiceId);
+    
     const nowIso = dateObj.toISOString();
     const todayDate = nowIso.slice(0, 10);
 
     const invoiceResult = await firestore.runTransaction(async (transaction) => {
       // Re-read task to prevent race conditions
-      const currentTaskDoc = await transaction.get(taskRef);
+      const currentTaskDoc = await transaction.get(effectiveTaskRef);
       if (!currentTaskDoc.exists) throw new Error('Task not found.');
       const currentTaskData = currentTaskDoc.data() || {};
       if (currentTaskData.invoiceId) {
         throw new Error('ALREADY_GENERATED');
       }
 
-      const counterDoc = await transaction.get(counterRef);
+      // Read counter: prefer company counter, fallback to legacy if company is legacy vivexa
+      let counterDoc = await transaction.get(companyCounterRef);
+      if (!counterDoc.exists && companyId === 'company_vivexa') {
+        counterDoc = await transaction.get(legacyCounterRef);
+      }
+      
       const currentSerial = counterDoc.exists ? Number(counterDoc.data()?.lastSerial || 0) : 0;
       const nextSerial = currentSerial + 1;
       const formattedSerial = String(nextSerial).padStart(3, '0');
       const invoiceNumber = `${prefix}-${currentMonthKey}-${formattedSerial}`;
 
       const newInvoice: Invoice = {
-        id: invoiceRef.id,
+        id: newInvoiceId,
+        companyId,
         invoiceNumber,
         invoiceType: matchedType as InvoiceType,
         invoiceSerial: nextSerial,
@@ -254,6 +338,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         isSameStateSupply: sameState,
         clientBillingDetailsSnapshot: clientBillingSnapshot,
         supplierBusinessDetailsSnapshot: supplierBusinessSnapshot,
+        templateId: selectedTemplateId,
+        templateSnapshot: templateConfig,
         invoiceDate: todayDate,
         createdByUid: authUser.uid,
         createdByEmployeeId: authUser.email || 'Admin',
@@ -262,34 +348,58 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         invoiceStatus: 'GENERATED',
       };
 
-      // Set new invoice
-      transaction.set(invoiceRef, newInvoice);
+      const cleanedData = cleanFirestoreData(newInvoice);
 
-      // Update counter
-      transaction.set(counterRef, {
+      // Save to company subcollection
+      transaction.set(companyInvoiceRef, cleanedData);
+
+      // Dual-write to root collection for backward compatibility
+      transaction.set(rootInvoiceRef, cleanedData);
+
+      // Update counters
+      transaction.set(companyCounterRef, {
         prefix,
         monthKey: currentMonthKey,
         lastSerial: nextSerial,
         updatedAt: nowIso,
       }, { merge: true });
 
-      // Update task
-      transaction.update(taskRef, {
-        invoiceId: invoiceRef.id,
+      if (companyId === 'company_vivexa') {
+        transaction.set(legacyCounterRef, {
+          prefix,
+          monthKey: currentMonthKey,
+          lastSerial: nextSerial,
+          updatedAt: nowIso,
+        }, { merge: true });
+      }
+
+      // Update task in both places if needed
+      const taskUpdatePayload = cleanFirestoreData({
+        invoiceId: newInvoiceId,
         invoiceNumber,
         invoiceStatus: 'GENERATED',
         updatedAt: nowIso,
       });
 
-      // Write audit log
-      const auditRef = firestore.collection('activityLogs').doc();
-      transaction.set(auditRef, {
+      transaction.update(effectiveTaskRef, taskUpdatePayload);
+      if (!isRootTask) {
+        // Also update root task if it exists for sync
+        const rootTaskDoc = await transaction.get(firestore.collection('incomeTasks').doc(taskId));
+        if (rootTaskDoc.exists) {
+          transaction.update(rootTaskDoc.ref, taskUpdatePayload);
+        }
+      }
+
+      // Write company activity log
+      const companyAuditRef = firestore.collection('companies').doc(companyId).collection('activityLogs').doc();
+      const auditPayload = cleanFirestoreData({
+        companyId,
         actorUid: authUser.uid,
         actorName: authUser.email || 'User',
         actorRole: authUser.role || 'employee',
         action: 'INVOICE_GENERATED',
         entityType: 'invoice',
-        entityId: invoiceRef.id,
+        entityId: newInvoiceId,
         description: `Generated ${matchedType} Invoice ${invoiceNumber} for ₹${totalInvoiceAmount.toLocaleString('en-IN')}`,
         metadata: {
           invoiceNumber,
@@ -299,6 +409,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         },
         timestamp: nowIso,
       });
+      transaction.set(companyAuditRef, auditPayload);
+
+      // Dual write audit log to root
+      const rootAuditRef = firestore.collection('activityLogs').doc();
+      transaction.set(rootAuditRef, auditPayload);
 
       return newInvoice;
     });
@@ -316,3 +431,4 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(500).json({ error: error.message || 'Failed to generate invoice.' });
   }
 }
+

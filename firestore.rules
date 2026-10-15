@@ -29,10 +29,120 @@ service cloud.firestore {
       return isAuthenticated() && request.auth.uid == uid;
     }
 
+    function isCompanyMember(companyId) {
+      return isAuthenticated() && (
+        request.auth.token.companyId == companyId ||
+        (getUserData().companyId == companyId) ||
+        exists(/databases/$(database)/documents/companies/$(companyId)/members/$(request.auth.uid))
+      );
+    }
+
+    function isCompanyAdmin(companyId) {
+      return isCompanyMember(companyId) && (
+        request.auth.token.role == 'admin' ||
+        getUserData().role == 'admin' ||
+        (exists(/databases/$(database)/documents/companies/$(companyId)/members/$(request.auth.uid)) &&
+         get(/databases/$(database)/documents/companies/$(companyId)/members/$(request.auth.uid)).data.role == 'admin')
+      );
+    }
+
+    // ==========================================
+    // MULTI-TENANT ISOLATED COMPANY SUBCOLLECTIONS
+    // ==========================================
+    match /companies/{companyId} {
+      allow read: if isCompanyMember(companyId);
+      allow update: if isCompanyAdmin(companyId);
+
+      match /members/{memberId} {
+        allow read: if isCompanyMember(companyId);
+        allow write: if isCompanyAdmin(companyId);
+      }
+
+      match /settings/{settingId} {
+        allow read: if isCompanyMember(companyId);
+        allow write: if isCompanyAdmin(companyId);
+      }
+
+      match /budgets/{monthKey} {
+        allow read: if isCompanyMember(companyId);
+        allow write: if isCompanyAdmin(companyId);
+      }
+
+      match /tasks/{taskId} {
+        allow read: if isCompanyMember(companyId);
+        allow create, update, delete: if isCompanyAdmin(companyId);
+      }
+
+      match /recurringTaskTemplates/{templateId} {
+        allow read, write: if isCompanyAdmin(companyId);
+      }
+
+      match /incomeEntries/{incomeId} {
+        allow read: if isCompanyAdmin(companyId) || (isCompanyMember(companyId) && resource.data.employeeUid == request.auth.uid);
+        allow create: if isCompanyMember(companyId) &&
+          request.resource.data.employeeUid == request.auth.uid &&
+          request.resource.data.amount is number &&
+          request.resource.data.amount > 0 &&
+          request.resource.data.status == 'VALID';
+        allow update: if isCompanyAdmin(companyId);
+        allow delete: if false;
+      }
+
+      match /expenseEntries/{expenseId} {
+        allow read: if isCompanyAdmin(companyId) || (isCompanyMember(companyId) && resource.data.employeeUid == request.auth.uid);
+        allow create: if isCompanyMember(companyId) &&
+          request.resource.data.employeeUid == request.auth.uid &&
+          request.resource.data.amount is number &&
+          request.resource.data.amount > 0 &&
+          request.resource.data.approvalStatus == 'SUBMITTED';
+        allow update: if isCompanyAdmin(companyId);
+        allow delete: if false;
+      }
+
+      match /expenseGroups/{groupId} {
+        allow read, write: if isCompanyMember(companyId);
+      }
+
+      match /clients/{clientId} {
+        allow read: if isCompanyMember(companyId);
+        allow create, update: if isCompanyMember(companyId);
+        allow delete: if isCompanyAdmin(companyId);
+      }
+
+      match /incomeTasks/{taskId} {
+        allow read: if isCompanyAdmin(companyId) || (isCompanyMember(companyId) && (resource.data.createdByUid == request.auth.uid || resource.data.assignedToUid == request.auth.uid));
+        allow create, update: if isCompanyMember(companyId);
+        allow delete: if isCompanyAdmin(companyId);
+      }
+
+      match /invoices/{invoiceId} {
+        allow read: if isCompanyMember(companyId);
+        allow write: if isCompanyAdmin(companyId);
+      }
+
+      match /invoiceCounters/{counterId} {
+        allow read, write: if isCompanyAdmin(companyId);
+      }
+
+      match /activityLogs/{logId} {
+        allow read, create: if isCompanyMember(companyId);
+        allow update, delete: if false;
+      }
+
+      match /notificationEvents/{eventId} {
+        allow read: if isCompanyAdmin(companyId) || (isCompanyMember(companyId) && resource.data.recipientUid == request.auth.uid);
+        allow create, update: if isCompanyMember(companyId);
+        allow delete: if isCompanyAdmin(companyId);
+      }
+    }
+
+    // ==========================================
+    // LEGACY ROOT COLLECTIONS (BACKWARD COMPATIBLE)
+    // ==========================================
+
     // 1. User Profiles
     match /users/{userId} {
       allow read: if isAuthenticated();
-      // Only admins can create users or change roles
       allow create: if isAdmin();
       allow update: if isAdmin() || (
         isOwner(userId) &&
@@ -60,34 +170,24 @@ service cloud.firestore {
 
     // 5. Income Entries
     match /incomeEntries/{incomeId} {
-      // Employees see their own income; Admins see all
       allow read: if isAdmin() || (isAuthenticated() && resource.data.employeeUid == request.auth.uid);
-      
-      // Employees can only submit for themselves with valid positive amount
       allow create: if isAuthenticated() &&
         request.resource.data.employeeUid == request.auth.uid &&
         request.resource.data.amount is number &&
         request.resource.data.amount > 0 &&
         request.resource.data.status == 'VALID';
-        
-      // Only Admin can void or correct income entries
       allow update: if isAdmin();
-      allow delete: if false; // Financial records are auditable, never hard-deleted
+      allow delete: if false;
     }
 
     // 6. Expense Entries
     match /expenseEntries/{expenseId} {
-      // Employees see their own expenses; Admins see all
       allow read: if isAdmin() || (isAuthenticated() && resource.data.employeeUid == request.auth.uid);
-      
-      // Employees can submit an expense for themselves
       allow create: if isAuthenticated() &&
         request.resource.data.employeeUid == request.auth.uid &&
         request.resource.data.amount is number &&
         request.resource.data.amount > 0 &&
         request.resource.data.approvalStatus == 'SUBMITTED';
-        
-      // Only Admins can approve/reject/reimburse expenses
       allow update: if isAdmin();
       allow delete: if false;
     }
@@ -95,7 +195,7 @@ service cloud.firestore {
     // 7. Grouped Expenses
     match /expenseGroups/{groupId} {
       allow read: if isAuthenticated();
-      allow write: if isAuthenticated(); // Aggregated during expense submission or admin review
+      allow write: if isAuthenticated();
     }
 
     // 8. Notifications
@@ -109,7 +209,7 @@ service cloud.firestore {
     match /activityLogs/{logId} {
       allow read: if isAuthenticated();
       allow create: if isAuthenticated();
-      allow update, delete: if false; // Audit logs are strictly immutable
+      allow update, delete: if false;
     }
 
     // 10. Income Collection Tasks
@@ -118,6 +218,25 @@ service cloud.firestore {
       allow create: if isAuthenticated();
       allow update: if isAuthenticated();
       allow delete: if isAdmin();
+    }
+
+    // 11. Clients
+    match /clients/{clientId} {
+      allow read: if isAuthenticated();
+      allow create, update: if isAuthenticated();
+      allow delete: if isAdmin();
+    }
+
+    // 12. Invoices
+    match /invoices/{invoiceId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+
+    // 13. System Config
+    match /systemConfig/{docId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
     }
   }
 }

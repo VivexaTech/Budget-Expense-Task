@@ -201,11 +201,13 @@ export async function createFixedTask(
   },
   adminUser: UserProfile
 ): Promise<FinancialTask> {
+  const companyId = adminUser.companyId || 'company_vivexa';
   const newTaskRef = doc(collection(db, 'tasks'));
   const now = new Date().toISOString();
 
   const task: FinancialTask = {
     id: newTaskRef.id,
+    companyId,
     title: data.title.trim(),
     amount: Number(data.amount),
     dueDate: data.dueDate,
@@ -221,10 +223,11 @@ export async function createFixedTask(
   };
 
   await setDoc(newTaskRef, task);
+  await setDoc(doc(db, 'companies', companyId, 'tasks', task.id), task);
 
   // Log activity
-  await setDoc(doc(collection(db, 'activityLogs')), {
-    id: doc(collection(db, 'activityLogs')).id,
+  const auditData = {
+    companyId,
     actorUid: adminUser.uid,
     actorName: adminUser.displayName,
     actorRole: 'admin',
@@ -234,7 +237,9 @@ export async function createFixedTask(
     description: `Created fixed task: ${task.title} (₹${task.amount.toLocaleString('en-IN')}) due on ${task.dueDate}`,
     metadata: { title: task.title, amount: task.amount, monthKey: task.monthKey },
     timestamp: now,
-  });
+  };
+  await setDoc(doc(collection(db, 'companies', companyId, 'activityLogs')), auditData);
+  await setDoc(doc(collection(db, 'activityLogs')), auditData);
 
   // Synchronize monthly target immediately so dashboard reflects the newly added task amount
   await syncBudgetTarget(data.monthKey);
@@ -380,7 +385,8 @@ export async function confirmTaskCompletion(
  */
 export function subscribeToTasksForMonth(
   monthKey: string,
-  callback: (tasks: FinancialTask[]) => void
+  callback: (tasks: FinancialTask[]) => void,
+  companyId = 'company_vivexa'
 ) {
   const q = query(
     collection(db, 'tasks'),
@@ -393,7 +399,11 @@ export function subscribeToTasksForMonth(
     (snapshot) => {
       const tasks: FinancialTask[] = [];
       snapshot.forEach((doc) => {
-        tasks.push(doc.data() as FinancialTask);
+        const item = doc.data() as FinancialTask;
+        const itemCompany = item.companyId || 'company_vivexa';
+        if (itemCompany === companyId) {
+          tasks.push(item);
+        }
       });
       callback(tasks);
     },

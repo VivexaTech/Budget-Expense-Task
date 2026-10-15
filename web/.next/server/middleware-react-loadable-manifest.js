@@ -1,0 +1,1 @@
+self.__REACT_LOADABLE_MANIFEST="{\"pages\\\\super-admin\\\\index.tsx -> ../../lib/firebase\":{\"id\":\"pages\\\\super-admin\\\\index.tsx -> ../../lib/firebase\",\"files\":[]}}"

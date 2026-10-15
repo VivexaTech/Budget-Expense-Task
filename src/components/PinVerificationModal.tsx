@@ -96,7 +96,7 @@ export const PinVerificationModal: React.FC<PinVerificationModalProps> = ({
                   </View>
                   <View style={styles.headerText}>
                     <Text style={styles.title}>Invoice Authorization</Text>
-                    <Text style={styles.subtitle}>Enter 6-digit GPIN or NPIN</Text>
+                    <Text style={styles.subtitle}>Enter your 6-digit invoice authorization PIN</Text>
                   </View>
                   <TouchableOpacity onPress={onClose} style={styles.closeBtn}>
                     <X size={20} color={COLORS.textSecondary} />
@@ -134,9 +134,8 @@ export const PinVerificationModal: React.FC<PinVerificationModalProps> = ({
 
                 {/* Instructions */}
                 <View style={styles.infoBox}>
-                  <Text style={styles.infoTitle}>Two-PIN Dual Billing Mode:</Text>
-                  <Text style={styles.infoLine}>• <Text style={styles.infoBold}>GPIN (GST PIN)</Text> generates a Tax Invoice (VTX-YYYY-MM-NNN)</Text>
-                  <Text style={styles.infoLine}>• <Text style={styles.infoBold}>NPIN (Non-GST PIN)</Text> generates a Commercial Invoice (VTN-YYYY-MM-NNN)</Text>
+                  <Text style={styles.infoTitle}>Secure Authorization</Text>
+                  <Text style={styles.infoLine}>Enter your 6-digit authorization PIN to verify and lock this official invoice.</Text>
                 </View>
 
                 {/* PIN Input Row */}
