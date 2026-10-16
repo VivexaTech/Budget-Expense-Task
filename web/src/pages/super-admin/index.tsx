@@ -54,9 +54,10 @@ export default function SuperAdminDashboard() {
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
       };
 
+      const apiUrl = process.env.NEXT_PUBLIC_API_URL || '';
       const [overviewRes, companiesRes] = await Promise.all([
-        fetch('/api/super-admin/overview', { headers }),
-        fetch('/api/super-admin/companies', { headers }),
+        fetch(`${apiUrl}/api/super-admin/overview`, { headers }),
+        fetch(`${apiUrl}/api/super-admin/companies`, { headers }),
       ]);
 
       if (overviewRes.ok) {
@@ -94,8 +95,9 @@ export default function SuperAdminDashboard() {
 
     try {
       setTogglingId(companyId);
+      const apiUrl = process.env.NEXT_PUBLIC_API_URL || '';
       const token = await (await import('../../lib/firebase')).auth.currentUser?.getIdToken();
-      const res = await fetch('/api/super-admin/toggle-company-status', {
+      const res = await fetch(`${apiUrl}/api/super-admin/toggle-company-status`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

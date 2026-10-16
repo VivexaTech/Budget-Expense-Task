@@ -49,8 +49,9 @@ export default function SuperAdminCompanyDetail() {
     if (!id || typeof id !== 'string') return;
     try {
       setLoading(true);
+      const apiUrl = process.env.NEXT_PUBLIC_API_URL || '';
       const token = await (await import('../../../lib/firebase')).auth.currentUser?.getIdToken();
-      const res = await fetch(`/api/super-admin/company-detail?id=${id}`, {
+      const res = await fetch(`${apiUrl}/api/super-admin/company-detail?id=${id}`, {
         headers: {
           'Content-Type': 'application/json',
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
@@ -93,8 +94,9 @@ export default function SuperAdminCompanyDetail() {
 
     try {
       setSaving(true);
+      const apiUrl = process.env.NEXT_PUBLIC_API_URL || '';
       const token = await (await import('../../../lib/firebase')).auth.currentUser?.getIdToken();
-      const res = await fetch('/api/super-admin/toggle-company-status', {
+      const res = await fetch(`${apiUrl}/api/super-admin/toggle-company-status`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -124,8 +126,9 @@ export default function SuperAdminCompanyDetail() {
   const handleToggleAlternativePermission = async (newVal: boolean) => {
     try {
       setSaving(true);
+      const apiUrl = process.env.NEXT_PUBLIC_API_URL || '';
       const token = await (await import('../../../lib/firebase')).auth.currentUser?.getIdToken();
-      const res = await fetch('/api/super-admin/toggle-invoice-permission', {
+      const res = await fetch(`${apiUrl}/api/super-admin/toggle-invoice-permission`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
